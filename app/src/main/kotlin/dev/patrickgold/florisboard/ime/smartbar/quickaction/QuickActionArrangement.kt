@@ -71,6 +71,9 @@ data class QuickActionArrangement(
                 QuickAction.InsertKey(TextKeyData.UNDO),
                 QuickAction.InsertKey(TextKeyData.REDO),
                 QuickAction.InsertKey(TextKeyData.SETTINGS),
+                QuickAction.InsertKey(TextKeyData.SECURE_ENCRYPT),
+                QuickAction.InsertKey(TextKeyData.SECURE_DECRYPT),
+                QuickAction.InsertKey(TextKeyData.SECURE_SESSION),
                 QuickAction.InsertKey(TextKeyData.TOGGLE_FLOATING_WINDOW),
                 QuickAction.InsertKey(TextKeyData.TOGGLE_RESIZE_MODE),
                 QuickAction.InsertKey(TextKeyData.IME_UI_MODE_CLIPBOARD),
@@ -91,8 +94,7 @@ data class QuickActionArrangement(
                 QuickAction.InsertKey(TextKeyData.FORWARD_DELETE),
                 QuickAction.InsertKey(TextKeyData.IME_HIDE_UI),
             ),
-            hiddenActions = listOf(
-            ),
+            hiddenActions = emptyList(),
         )
     }
 

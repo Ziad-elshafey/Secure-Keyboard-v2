@@ -109,6 +109,9 @@ fun QuickAction.computeDisplayName(evaluator: ComputingEvaluator): String {
                 R.string.general__empty_string
             }
             KeyCode.NOOP -> R.string.quick_action__noop
+            KeyCode.SECURE_ENCRYPT -> R.string.quick_action__secure_encrypt
+            KeyCode.SECURE_DECRYPT -> R.string.quick_action__secure_decrypt
+            KeyCode.SECURE_SESSION -> R.string.quick_action__secure_session
             else -> R.string.general__invalid_fatal
         })
         is QuickAction.InsertText -> data
@@ -149,6 +152,9 @@ fun QuickAction.computeTooltip(evaluator: ComputingEvaluator): String {
                 R.string.general__empty_string
             }
             KeyCode.NOOP -> R.string.quick_action__noop__tooltip
+            KeyCode.SECURE_ENCRYPT -> R.string.quick_action__secure_encrypt__tooltip
+            KeyCode.SECURE_DECRYPT -> R.string.quick_action__secure_decrypt__tooltip
+            KeyCode.SECURE_SESSION -> R.string.quick_action__secure_session__tooltip
             else -> R.string.general__invalid_fatal
         })
         is QuickAction.InsertText -> "Insert text '$data'"

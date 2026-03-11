@@ -8,6 +8,10 @@
     <!-- Permission needed to create notifications on devices running Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
+    <!-- Permissions needed for secure messaging backend access -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
     <!-- Android 11+ only: Define that FlorisBoard requests to see all apps that
           ship with an IME or Spell Check service. This is used to guide the user
           in the Settings Ui why FlorisBoard may not be working.
@@ -29,9 +33,11 @@
         android:icon="@mipmap/floris_app_icon"
         android:label="@string/floris_app_name"
         android:enableOnBackInvokedCallback="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/floris_app_icon_round"
         android:supportsRtl="true"
         android:theme="@style/FlorisAppTheme"
+        android:usesCleartextTraffic="true"
         tools:targetApi="tiramisu">
 
         <!-- Allow app to be profiled for benchmarking and baseline profile generation -->
@@ -159,6 +165,52 @@
                 android:name="androidx.emoji2.text.EmojiCompatInitializer"
                 tools:node="remove"/>
         </provider>
+
+        <!-- Secure Messaging: Decrypt Accessibility Service -->
+        <service
+            android:name="dev.patrickgold.florisboard.secure.services.DecryptAccessibilityService"
+            android:label="Secure Decrypt Capture"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config"/>
+        </service>
+
+        <!-- Secure Messaging: Decrypt Result Activity -->
+        <activity
+            android:name="dev.patrickgold.florisboard.secure.ui.DecryptResultActivity"
+            android:theme="@android:style/Theme.Material.Dialog"
+            android:exported="false"/>
+
+        <!-- Secure Messaging: PROCESS_TEXT Encrypt -->
+        <activity
+            android:name="dev.patrickgold.florisboard.secure.ui.SecureTextActionActivity"
+            android:label="Encrypt"
+            android:theme="@android:style/Theme.Material.Dialog"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity>
+
+        <!-- Secure Messaging: PROCESS_TEXT Decrypt (activity-alias) -->
+        <activity-alias
+            android:name="dev.patrickgold.florisboard.secure.ui.SecureTextActionDecryptActivity"
+            android:label="Decrypt"
+            android:targetActivity="dev.patrickgold.florisboard.secure.ui.SecureTextActionActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity-alias>
 
     </application>
 

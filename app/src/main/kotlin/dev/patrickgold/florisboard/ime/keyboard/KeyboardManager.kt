@@ -61,6 +61,7 @@ import dev.patrickgold.florisboard.lib.titlecase
 import dev.patrickgold.florisboard.lib.uppercase
 import dev.patrickgold.florisboard.lib.util.InputMethodUtils
 import dev.patrickgold.florisboard.nlpManager
+import dev.patrickgold.florisboard.secureMessagingManager
 import dev.patrickgold.florisboard.subtypeManager
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicInteger
@@ -91,6 +92,7 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
     private val extensionManager by context.extensionManager()
     private val nlpManager by context.nlpManager()
     private val subtypeManager by context.subtypeManager()
+    private val secureMessagingManager by context.secureMessagingManager()
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     val layoutManager = LayoutManager(context)
@@ -739,6 +741,9 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
             KeyCode.IME_UI_MODE_TEXT -> activeState.imeUiMode = ImeUiMode.TEXT
             KeyCode.IME_UI_MODE_MEDIA -> activeState.imeUiMode = ImeUiMode.MEDIA
             KeyCode.IME_UI_MODE_CLIPBOARD -> activeState.imeUiMode = ImeUiMode.CLIPBOARD
+            KeyCode.SECURE_ENCRYPT -> scope.launch { secureMessagingManager.handleEncrypt(appContext) }
+            KeyCode.SECURE_DECRYPT -> scope.launch { secureMessagingManager.handleDecrypt(appContext) }
+            KeyCode.SECURE_SESSION -> activeState.isSecureSessionVisible = !activeState.isSecureSessionVisible
             KeyCode.VOICE_INPUT -> FlorisImeService.switchToVoiceInputMethod()
             KeyCode.KANA_SWITCHER -> handleKanaSwitch()
             KeyCode.KANA_HIRA -> handleKanaHira()

@@ -29,6 +29,9 @@ import androidx.compose.material.icons.automirrored.outlined.Assignment
 import androidx.compose.material.icons.automirrored.outlined.Backspace
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPasteGo
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -329,6 +332,15 @@ fun ComputingEvaluator.computeImageVector(data: KeyData): ImageVector? {
         }
         KeyCode.NOOP -> {
             Icons.Default.Close
+        }
+        KeyCode.SECURE_ENCRYPT -> {
+            Icons.Default.Lock
+        }
+        KeyCode.SECURE_DECRYPT -> {
+            Icons.Default.LockOpen
+        }
+        KeyCode.SECURE_SESSION -> {
+            Icons.Default.Group
         }
         else -> null
     }

@@ -70,6 +70,7 @@ import dev.patrickgold.florisboard.app.settings.localization.LocalizationScreen
 import dev.patrickgold.florisboard.app.settings.localization.SelectLocaleScreen
 import dev.patrickgold.florisboard.app.settings.localization.SubtypeEditorScreen
 import dev.patrickgold.florisboard.app.settings.media.MediaScreen
+import dev.patrickgold.florisboard.app.settings.secure.SecureMessagingScreen
 import dev.patrickgold.florisboard.app.settings.smartbar.SmartbarScreen
 import dev.patrickgold.florisboard.app.settings.theme.ThemeManagerScreen
 import dev.patrickgold.florisboard.app.settings.theme.ThemeManagerScreenAction
@@ -199,6 +200,10 @@ object Routes {
         @Serializable
         @Deeplink("settings/about/third-party-licenses")
         object ThirdPartyLicenses
+
+        @Serializable
+        @Deeplink("settings/secure-messaging")
+        object SecureMessaging
     }
 
     object Devtools {
@@ -322,6 +327,7 @@ object Routes {
             composableWithDeepLink(Settings.About::class) { AboutScreen() }
             composableWithDeepLink(Settings.ProjectLicense::class) { ProjectLicenseScreen() }
             composableWithDeepLink(Settings.ThirdPartyLicenses::class) { ThirdPartyLicensesScreen() }
+            composableWithDeepLink(Settings.SecureMessaging::class) { SecureMessagingScreen() }
 
             composableWithDeepLink(Devtools.Home::class) { DevtoolsScreen() }
             composableWithDeepLink(Devtools.AndroidLocales::class) { AndroidLocalesScreen() }

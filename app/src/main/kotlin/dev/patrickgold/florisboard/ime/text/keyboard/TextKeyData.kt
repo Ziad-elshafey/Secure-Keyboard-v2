@@ -149,6 +149,9 @@ data class TextKeyData(
                 TOGGLE_ACTIONS_EDITOR,
                 TOGGLE_INCOGNITO_MODE,
                 TOGGLE_AUTOCORRECT,
+                SECURE_ENCRYPT,
+                SECURE_DECRYPT,
+                SECURE_SESSION,
             )
         }
 
@@ -530,6 +533,25 @@ data class TextKeyData(
             type = KeyType.FUNCTION,
             code = KeyCode.TOGGLE_AUTOCORRECT,
             label = "toggle_autocorrect",
+        )
+
+        /** Predefined key data for [KeyCode.SECURE_ENCRYPT] */
+        val SECURE_ENCRYPT = TextKeyData(
+            type = KeyType.FUNCTION,
+            code = KeyCode.SECURE_ENCRYPT,
+            label = "secure_encrypt",
+        )
+        /** Predefined key data for [KeyCode.SECURE_DECRYPT] */
+        val SECURE_DECRYPT = TextKeyData(
+            type = KeyType.FUNCTION,
+            code = KeyCode.SECURE_DECRYPT,
+            label = "secure_decrypt",
+        )
+        /** Predefined key data for [KeyCode.SECURE_SESSION] */
+        val SECURE_SESSION = TextKeyData(
+            type = KeyType.FUNCTION,
+            code = KeyCode.SECURE_SESSION,
+            label = "secure_session",
         )
     }
 }

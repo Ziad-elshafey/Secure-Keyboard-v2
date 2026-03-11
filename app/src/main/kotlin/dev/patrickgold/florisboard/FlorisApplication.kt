@@ -42,6 +42,7 @@ import dev.patrickgold.florisboard.lib.devtools.Flog
 import dev.patrickgold.florisboard.lib.devtools.LogTopic
 import dev.patrickgold.florisboard.lib.devtools.flogError
 import dev.patrickgold.florisboard.lib.ext.ExtensionManager
+import dev.patrickgold.florisboard.secure.SecureMessagingManager
 import dev.patrickgold.jetpref.datastore.runtime.initAndroid
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,7 @@ class FlorisApplication : Application() {
     val glideTypingManager = lazy { GlideTypingManager(this) }
     val keyboardManager = lazy { KeyboardManager(this) }
     val nlpManager = lazy { NlpManager(this) }
+    val secureMessagingManager = lazy { SecureMessagingManager(this) }
     val subtypeManager = lazy { SubtypeManager(this) }
     val themeManager = lazy { ThemeManager(this) }
 
@@ -168,6 +170,8 @@ fun Context.glideTypingManager() = this.florisApplication().glideTypingManager
 fun Context.keyboardManager() = this.florisApplication().keyboardManager
 
 fun Context.nlpManager() = this.florisApplication().nlpManager
+
+fun Context.secureMessagingManager() = this.florisApplication().secureMessagingManager
 
 fun Context.subtypeManager() = this.florisApplication().subtypeManager
 

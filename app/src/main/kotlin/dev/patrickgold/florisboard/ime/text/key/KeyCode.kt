@@ -114,6 +114,10 @@ object KeyCode {
 
     const val SETTINGS =                    -301
 
+    const val SECURE_ENCRYPT =              -501
+    const val SECURE_DECRYPT =              -502
+    const val SECURE_SESSION =              -503
+
     const val CURRENCY_SLOT_1 =             -801
     const val CURRENCY_SLOT_2 =             -802
     const val CURRENCY_SLOT_3 =             -803

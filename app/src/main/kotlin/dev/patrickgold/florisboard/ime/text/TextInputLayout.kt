@@ -36,6 +36,7 @@ import dev.patrickgold.florisboard.ime.smartbar.quickaction.QuickActionsOverflow
 import dev.patrickgold.florisboard.ime.text.keyboard.TextKeyboardLayout
 import dev.patrickgold.florisboard.ime.theme.FlorisImeUi
 import dev.patrickgold.florisboard.keyboardManager
+import dev.patrickgold.florisboard.secure.ui.SessionOverlayPanel
 import dev.patrickgold.jetpref.datastore.model.collectAsState
 import org.florisboard.lib.snygg.ui.SnyggIcon
 
@@ -61,6 +62,8 @@ fun TextInputLayout(
         Smartbar()
         if (state.isActionsOverflowVisible) {
             QuickActionsOverflowPanel()
+        } else if (state.isSecureSessionVisible) {
+            SessionOverlayPanel()
         } else {
             Box {
                 val incognitoDisplayMode by prefs.keyboard.incognitoDisplayMode.collectAsState()
