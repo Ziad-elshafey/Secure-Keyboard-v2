@@ -24,8 +24,6 @@ import dev.patrickgold.florisboard.secure.data.local.SecureSessionStore
 import dev.patrickgold.florisboard.secure.data.remote.AuthInterceptor
 import dev.patrickgold.florisboard.secure.data.remote.SecureApiService
 import dev.patrickgold.florisboard.secure.data.remote.SessionResponse
-import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeApiService
-import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeApiService
 import dev.patrickgold.florisboard.secure.data.remote.TokenRefreshAuthenticator
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
 import dev.patrickgold.florisboard.secure.data.repository.DecryptResult
@@ -100,15 +98,6 @@ class SecureMessagingManager(
             .build()
     }
 
-    private val stegoClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .addInterceptor(HttpLoggingInterceptor().apply { level = loggingLevel })
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(3, TimeUnit.MINUTES)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .build()
-    }
-
     val secureApiService: SecureApiService by lazy {
         Retrofit.Builder()
             .baseUrl(SECURE_API_BASE_URL)
@@ -118,30 +107,10 @@ class SecureMessagingManager(
             .create(SecureApiService::class.java)
     }
 
-    val stegoEncodeApiService: StegoEncodeApiService by lazy {
-        Retrofit.Builder()
-            .baseUrl(STEGO_ENCODE_BASE_URL)
-            .client(stegoClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(StegoEncodeApiService::class.java)
-    }
-
-    val stegoDecodeApiService: StegoDecodeApiService by lazy {
-        Retrofit.Builder()
-            .baseUrl(STEGO_DECODE_BASE_URL)
-            .client(stegoClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(StegoDecodeApiService::class.java)
-    }
-
     val secureMessagingRepository: SecureMessagingRepository by lazy {
         CompressionService.initialize(appContext)
         SecureMessagingRepository(
             api = secureApiService,
-            stegoEncodeApi = stegoEncodeApiService,
-            stegoDecodeApi = stegoDecodeApiService,
             tokenManager = tokenManager,
             keyStore = keyStore,
         )
@@ -153,8 +122,6 @@ class SecureMessagingManager(
     companion object {
         private const val TAG = "SecureMessagingMgr"
         private const val SECURE_API_BASE_URL = BuildConfig.SECURE_API_BASE_URL
-        private const val STEGO_ENCODE_BASE_URL = BuildConfig.STEGO_ENCODE_BASE_URL
-        private const val STEGO_DECODE_BASE_URL = BuildConfig.STEGO_DECODE_BASE_URL
     }
 
     fun isReady(): Boolean {

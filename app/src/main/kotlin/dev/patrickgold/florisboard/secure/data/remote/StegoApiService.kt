@@ -17,6 +17,10 @@ interface StegoDecodeApiService {
 data class StegoEncodeRequest(
     @SerializedName("context") val context: String,
     @SerializedName("bits") val bits: String,
+    @SerializedName("temperature") val temperature: Double = 1.2,
+    @SerializedName("top_k") val topK: Int = 80,
+    @SerializedName("repetition_penalty") val repetitionPenalty: Double = 1.1,
+    @SerializedName("prompt_mode") val promptMode: String = "short_starter",
 )
 
 data class StegoEncodeResponse(
@@ -27,6 +31,10 @@ data class StegoEncodeResponse(
 
 data class StegoDecodeRequest(
     @SerializedName("text") val text: String,
+    @SerializedName("temperature") val temperature: Double = 1.2,
+    @SerializedName("top_k") val topK: Int = 80,
+    @SerializedName("repetition_penalty") val repetitionPenalty: Double = 1.1,
+    @SerializedName("prompt_mode") val promptMode: String = "short_starter",
 )
 
 data class StegoDecodeResponse(

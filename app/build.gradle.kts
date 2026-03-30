@@ -114,8 +114,8 @@ configure<ApplicationExtension> {
             isDebuggable = true
             isJniDebuggable = false
             buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "http://10.0.2.2:8000/")))
-            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
-            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
             manifestPlaceholders["secureUsesCleartextTraffic"] = "true"
         }
 
@@ -127,8 +127,8 @@ configure<ApplicationExtension> {
             isMinifyEnabled = true
             isShrinkResources = true
             buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
-            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
-            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
 
         named("release") {
@@ -138,8 +138,8 @@ configure<ApplicationExtension> {
             isMinifyEnabled = true
             isShrinkResources = true
             buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
-            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
-            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
 
         create("benchmark") {
@@ -151,8 +151,8 @@ configure<ApplicationExtension> {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
-            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
-            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
     }
 

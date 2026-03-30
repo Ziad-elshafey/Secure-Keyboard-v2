@@ -12,10 +12,6 @@ import dev.patrickgold.florisboard.secure.data.remote.RefreshTokenRequest
 import dev.patrickgold.florisboard.secure.data.remote.RegisterRequest
 import dev.patrickgold.florisboard.secure.data.remote.SecureApiService
 import dev.patrickgold.florisboard.secure.data.remote.SessionResponse
-import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeApiService
-import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeRequest
-import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeApiService
-import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeRequest
 import dev.patrickgold.florisboard.secure.data.remote.UploadKeysRequest
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
 import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
@@ -23,8 +19,6 @@ import android.util.Log
 
 class SecureMessagingRepository(
     private val api: SecureApiService,
-    private val stegoEncodeApi: StegoEncodeApiService,
-    private val stegoDecodeApi: StegoDecodeApiService,
     private val tokenManager: AuthTokenManager,
     private val keyStore: SecureKeyStore,
 ) {
@@ -32,7 +26,6 @@ class SecureMessagingRepository(
         private const val tag = "SecureMessagingRepo"
         const val flagRaw: Byte = 0x00
         const val flagCompressed: Byte = 0x01
-        private const val defaultStegoContext = "car"
     }
 
     private val compressionEnabled: Boolean by lazy {
@@ -190,47 +183,27 @@ class SecureMessagingRepository(
         val payload = buildPayload(plaintext)
         val ciphertext = E2EEService.chacha20Encrypt(payload, sharedSecret, counter)
         val packed = E2EEService.packCiphertextWithCounter(ciphertext, counter)
-        val packedBits = packed.toBitString()
 
         Log.d(
             tag,
             "sendMessage: raw=${plaintext.toByteArray().size}B, payload=${payload.size}B (flag=0x%02X), cipher=${ciphertext.size}B, packed=${packed.size}B, counter=$counter".format(payload[0]),
         )
 
-        runCatching {
-            obfuscateWithServer(packed, peerUsername)
-        }.fold(
-            onSuccess = { sendResult ->
-                Log.d(
-                    tag,
-                    "sendMessage: obfuscated through server provider=${sendResult.providerType} fallback=${sendResult.usedFallback}",
-                )
-                sendResult
-            },
-            onFailure = { e ->
-                Log.w(tag, "Server obfuscation failed (${e.message}) - falling back to Modal encode")
-                obfuscateWithModal(packedBits)
-            },
+        val sendResult = obfuscateWithServer(packed, peerUsername)
+        Log.d(
+            tag,
+            "sendMessage: obfuscated through server provider=${sendResult.providerType} fallback=${sendResult.usedFallback}",
         )
+        sendResult
     }
 
     suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<DecryptResult> = runCatching {
         Log.d(tag, "decryptMessage: sender=$senderUsername")
 
-        val decoded = runCatching {
-            deobfuscateWithServer(obfuscatedText, senderUsername)
-        }.fold(
-            onSuccess = { decryptResult ->
-                Log.d(
-                    tag,
-                    "decryptMessage: deobfuscated through server provider=${decryptResult.providerType} fallback=${decryptResult.usedFallback}",
-                )
-                decryptResult
-            },
-            onFailure = { e ->
-                Log.w(tag, "Server deobfuscation failed (${e.message}) - falling back to Modal decode")
-                deobfuscateWithModal(obfuscatedText)
-            },
+        val decoded = deobfuscateWithServer(obfuscatedText, senderUsername)
+        Log.d(
+            tag,
+            "decryptMessage: deobfuscated through server provider=${decoded.providerType} fallback=${decoded.usedFallback}",
         )
 
         val sessions = api.listSessions(activeOnly = true)
@@ -361,28 +334,6 @@ class SecureMessagingRepository(
         }
     }
 
-    private fun ByteArray.toBitString(): String =
-        joinToString(separator = "") { byte ->
-            String.format("%8s", (byte.toInt() and 0xFF).toString(2)).replace(' ', '0')
-        }
-
-    private fun bitStringToByteArray(bits: String): ByteArray {
-        val normalizedBits = bits.filterNot { it.isWhitespace() }
-        require(normalizedBits.isNotBlank()) { "Decoded bitstring is empty" }
-        require(normalizedBits.all { it == '0' || it == '1' }) {
-            "Decoded bitstring contains invalid chars"
-        }
-        require(normalizedBits.length % 8 == 0) {
-            "Decoded bitstring length must be a multiple of 8, got ${normalizedBits.length}"
-        }
-
-        return ByteArray(normalizedBits.length / 8) { index ->
-            normalizedBits.substring(index * 8, index * 8 + 8).toInt(2).toByte()
-        }
-    }
-
-    private fun buildStegoContext(): String = defaultStegoContext
-
     private suspend fun obfuscateWithServer(
         packedCiphertext: ByteArray,
         peerUsername: String,
@@ -400,20 +351,6 @@ class SecureMessagingRepository(
         )
     }
 
-    private suspend fun obfuscateWithModal(packedBits: String): SendResult {
-        val obfuscatedText = stegoEncodeApi.encode(
-            StegoEncodeRequest(
-                context = buildStegoContext(),
-                bits = packedBits,
-            ),
-        ).text
-        return SendResult(
-            obfuscatedText = obfuscatedText,
-            providerType = StegoProviderType.MODAL,
-            usedFallback = true,
-        )
-    }
-
     private suspend fun deobfuscateWithServer(
         obfuscatedText: String,
         senderUsername: String,
@@ -427,16 +364,6 @@ class SecureMessagingRepository(
             packedCiphertext = packedCiphertext,
             providerType = response.provider.toStegoProviderType(),
             usedFallback = response.fallbackUsed,
-        )
-    }
-
-    private suspend fun deobfuscateWithModal(obfuscatedText: String): PackedDecryptResult {
-        return PackedDecryptResult(
-            packedCiphertext = bitStringToByteArray(
-                stegoDecodeApi.decode(StegoDecodeRequest(text = obfuscatedText)).bits,
-            ),
-            providerType = StegoProviderType.MODAL,
-            usedFallback = true,
         )
     }
 
