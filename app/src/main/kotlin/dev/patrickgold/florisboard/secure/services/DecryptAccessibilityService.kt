@@ -20,6 +20,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import dev.patrickgold.florisboard.BuildConfig
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.secure.core.DecryptCaptureState
 
@@ -35,6 +36,7 @@ class DecryptAccessibilityService : AccessibilityService() {
         private const val MAX_SCREEN_SCAN_DEPTH = 15
         private const val PICKER_PREVIEW_MAX_CHARS = 120
         private const val SCREEN_AREA_RATIO_LIMIT = 0.5
+        private const val CAPTURE_TIMEOUT_MS = 15000L
     }
 
     private val TIMESTAMP_REGEX = Regex("""^\d{1,2}:\d{2}(\s?[APap][Mm])?$""")
@@ -57,6 +59,11 @@ class DecryptAccessibilityService : AccessibilityService() {
     private var pickerView: View? = null
     private var snapshotRegions: List<MessageRegion> = emptyList()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val captureTimeoutRunnable = Runnable {
+        if (!DecryptCaptureState.isCapturing) return@Runnable
+        Toast.makeText(this, R.string.secure__decrypt_capture_cancelled, Toast.LENGTH_SHORT).show()
+        DecryptCaptureState.stopCapture()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -70,6 +77,7 @@ class DecryptAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        cancelCaptureTimeout()
         removeAllOverlays()
         if (DecryptCaptureState.serviceInstance === this) {
             DecryptCaptureState.serviceInstance = null
@@ -96,7 +104,7 @@ class DecryptAccessibilityService : AccessibilityService() {
         }
 
         snapshotRegions = snapshotMessageRegions().also {
-            Log.d(TAG, "Pre-snapshot captured ${it.size} message regions")
+            debugLog { "showTapCaptureOverlay: snapshot prepared" }
         }
         removeTouchOverlay()
         showBanner()
@@ -109,6 +117,11 @@ class DecryptAccessibilityService : AccessibilityService() {
                 if (event.action == MotionEvent.ACTION_UP) {
                     val x = event.rawX.toInt()
                     val y = event.rawY.toInt()
+                    if (isPointInsideView(bannerView, x, y)) {
+                        Toast.makeText(this@DecryptAccessibilityService, R.string.secure__decrypt_capture_cancelled, Toast.LENGTH_SHORT).show()
+                        DecryptCaptureState.stopCapture()
+                        return@setOnTouchListener true
+                    }
                     removeTouchOverlay()
                     removeBanner()
                     findAndDeliverTextAtCoords(x, y)
@@ -127,8 +140,17 @@ class DecryptAccessibilityService : AccessibilityService() {
             PixelFormat.TRANSLUCENT,
         )
 
-        wm.addView(view, params)
-        touchOverlay = view
+        try {
+            wm.addView(view, params)
+            touchOverlay = view
+            scheduleCaptureTimeout()
+        } catch (e: Exception) {
+            warnLog("showTapCaptureOverlay: failed to add touch overlay", e)
+            snapshotRegions = emptyList()
+            removeBanner()
+            Toast.makeText(this, R.string.secure__decrypt_scan_failed, Toast.LENGTH_SHORT).show()
+            DecryptCaptureState.stopCapture()
+        }
     }
 
     private fun removeTouchOverlay() {
@@ -151,7 +173,7 @@ class DecryptAccessibilityService : AccessibilityService() {
             .minByOrNull { it.bounds.width().toLong() * it.bounds.height() }
 
         if (hit != null && hit.text.length >= MIN_MESSAGE_LENGTH) {
-            Log.d(TAG, "Snapshot hit: ${hit.text.length} chars at ${hit.bounds}")
+            debugLog { "findAndDeliverTextAtCoords: matched snapshot candidate" }
             DecryptCaptureState.deliverText(hit.text)
             return
         }
@@ -407,8 +429,13 @@ class DecryptAccessibilityService : AccessibilityService() {
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP }
 
-        wm.addView(root, params)
-        bannerView = root
+        try {
+            wm.addView(root, params)
+            bannerView = root
+        } catch (e: Exception) {
+            warnLog("showBanner: failed to add banner overlay", e)
+            bannerView = null
+        }
     }
 
     private fun removeBanner() {
@@ -541,8 +568,15 @@ class DecryptAccessibilityService : AccessibilityService() {
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.BOTTOM }
 
-        wm.addView(root, params)
-        pickerView = root
+        try {
+            wm.addView(root, params)
+            pickerView = root
+        } catch (e: Exception) {
+            warnLog("showPickerOverlay: failed to add picker overlay", e)
+            pickerView = null
+            Toast.makeText(this, R.string.secure__decrypt_scan_failed, Toast.LENGTH_SHORT).show()
+            DecryptCaptureState.stopCapture()
+        }
     }
 
     private fun removePicker() {
@@ -565,9 +599,11 @@ class DecryptAccessibilityService : AccessibilityService() {
             return
         }
 
+        cancelCaptureTimeout()
         removeTouchOverlay()
         removeBanner()
         removePicker()
+        snapshotRegions = emptyList()
     }
 
     @Suppress("DEPRECATION")
@@ -575,5 +611,41 @@ class DecryptAccessibilityService : AccessibilityService() {
         try {
             node?.recycle()
         } catch (_: Exception) {}
+    }
+
+    private fun isPointInsideView(view: View?, x: Int, y: Int): Boolean {
+        val target = view ?: return false
+        if (!target.isShown) return false
+        val location = IntArray(2)
+        target.getLocationOnScreen(location)
+        val left = location[0]
+        val top = location[1]
+        val right = left + target.width
+        val bottom = top + target.height
+        return x in left until right && y in top until bottom
+    }
+
+    private fun scheduleCaptureTimeout() {
+        mainHandler.removeCallbacks(captureTimeoutRunnable)
+        mainHandler.postDelayed(captureTimeoutRunnable, CAPTURE_TIMEOUT_MS)
+    }
+
+    private fun cancelCaptureTimeout() {
+        mainHandler.removeCallbacks(captureTimeoutRunnable)
+    }
+
+    private inline fun debugLog(message: () -> String) {
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message())
+        }
+    }
+
+    private fun warnLog(message: String, throwable: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
+        if (throwable != null) {
+            Log.w(TAG, message, throwable)
+        } else {
+            Log.w(TAG, message)
+        }
     }
 }

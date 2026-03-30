@@ -37,7 +37,7 @@
         android:roundIcon="@mipmap/floris_app_icon_round"
         android:supportsRtl="true"
         android:theme="@style/FlorisAppTheme"
-        android:usesCleartextTraffic="true"
+        android:usesCleartextTraffic="false"
         tools:targetApi="tiramisu">
 
         <!-- Allow app to be profiled for benchmarking and baseline profile generation -->

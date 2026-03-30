@@ -1172,6 +1172,9 @@
     <string name="secure__type_message_hint">Type a message first</string>
     <string name="secure__encrypting">Encrypting…</string>
     <string name="secure__encrypted_done">Encrypted!</string>
+    <string name="secure__clipboard_label">Text</string>
+    <string name="secure__process_text_too_large_title">Selection too large</string>
+    <string name="secure__process_text_too_large_message">Selected text exceeds the safe limit of %1$d characters.</string>
     <string name="secure__decrypt_capture_waiting">Tap on the message to decrypt</string>
     <string name="secure__decrypt_capture_cancelled">Capture cancelled</string>
     <string name="secure__decrypt_capture_enable_service">Enable the accessibility service or copy text to clipboard first</string>

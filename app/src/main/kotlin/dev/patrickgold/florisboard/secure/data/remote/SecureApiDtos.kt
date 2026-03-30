@@ -95,6 +95,17 @@ data class SessionResponse(
     @SerializedName("is_active") val isActive: Boolean,
 )
 
+data class DuplicateSessionConflictResponse(
+    @SerializedName("detail") val detail: String,
+    @SerializedName("existing_session_id") val existingSessionId: String,
+    @SerializedName("initiator_id") val initiatorId: String,
+    @SerializedName("initiator_username") val initiatorUsername: String,
+    @SerializedName("responder_id") val responderId: String,
+    @SerializedName("responder_username") val responderUsername: String,
+    @SerializedName("last_counter") val lastCounter: Int,
+    @SerializedName("is_active") val isActive: Boolean,
+)
+
 data class CounterResponse(
     @SerializedName("session_id") val sessionId: String,
     @SerializedName("counter") val counter: Int,
@@ -103,6 +114,7 @@ data class CounterResponse(
 data class ObfuscateRequest(
     @SerializedName("ciphertext_b64") val ciphertextB64: String,
     @SerializedName("peer_username") val peerUsername: String,
+    @SerializedName("session_id") val sessionId: String? = null,
 )
 
 data class ObfuscateResponse(
@@ -112,6 +124,7 @@ data class ObfuscateResponse(
 data class DeobfuscateRequest(
     @SerializedName("obfuscated_text") val obfuscatedText: String,
     @SerializedName("sender_username") val senderUsername: String,
+    @SerializedName("session_id") val sessionId: String? = null,
 )
 
 data class DeobfuscateResponse(

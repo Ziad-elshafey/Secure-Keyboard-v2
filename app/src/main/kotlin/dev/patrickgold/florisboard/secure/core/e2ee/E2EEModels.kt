@@ -53,3 +53,12 @@ data class EncryptedMessage(
 
     override fun hashCode(): Int = 31 * ciphertext.contentHashCode() + nonce.contentHashCode()
 }
+
+data class PackedMessageEnvelope(
+    val ciphertext: ByteArray,
+    val counter: Int,
+    val nonce: ByteArray?,
+) {
+    val usesAead: Boolean
+        get() = nonce != null
+}

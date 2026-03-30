@@ -3,31 +3,20 @@ package dev.patrickgold.florisboard.secure.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import dev.patrickgold.florisboard.secure.core.e2ee.IdentityKeyPair
 import dev.patrickgold.florisboard.secure.core.e2ee.SignedPreKey
 
 class SecureKeyStore(context: Context) {
     private val prefs: SharedPreferences by lazy {
-        val masterKey = MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context.applicationContext,
-            PREFS_FILE,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        EncryptedPrefsFactory.create(context.applicationContext, PREFS_FILE)
     }
 
     fun setActiveUser(userId: String) {
-        prefs.edit().putString(KEY_ACTIVE_USER_ID, userId).apply()
+        prefs.edit().putString(KEY_ACTIVE_USER_ID, userId).commitOrThrow()
     }
 
     fun clearActiveUser() {
-        prefs.edit().remove(KEY_ACTIVE_USER_ID).apply()
+        prefs.edit().remove(KEY_ACTIVE_USER_ID).commitOrThrow()
     }
 
     fun hasActiveUser(): Boolean = prefs.contains(KEY_ACTIVE_USER_ID)
@@ -47,7 +36,7 @@ class SecureKeyStore(context: Context) {
         prefs.edit()
             .putString(scopedKey(KEY_IDENTITY_PRIVATE), encode(keyPair.privateKey))
             .putString(scopedKey(KEY_IDENTITY_PUBLIC), encode(keyPair.publicKey))
-            .apply()
+            .commitOrThrow()
     }
 
     fun getIdentityKeyPair(): IdentityKeyPair? {
@@ -65,7 +54,7 @@ class SecureKeyStore(context: Context) {
             .putString(scopedKey(KEY_SPK_PRIVATE), encode(preKey.privateKey))
             .putString(scopedKey(KEY_SPK_PUBLIC), encode(preKey.publicKey))
             .putString(scopedKey(KEY_SPK_SIGNATURE), encode(preKey.signature))
-            .apply()
+            .commitOrThrow()
     }
 
     fun getSignedPreKey(): SignedPreKey? {
@@ -81,12 +70,16 @@ class SecureKeyStore(context: Context) {
         return SignedPreKey(keyId = id, privateKey = priv, publicKey = pub, signature = sig)
     }
 
-    fun hasSignedPreKey(): Boolean = prefs.contains(scopedKey(KEY_SPK_PRIVATE))
+    fun hasSignedPreKey(): Boolean =
+        prefs.contains(scopedKey(KEY_SPK_ID)) &&
+            prefs.contains(scopedKey(KEY_SPK_PRIVATE)) &&
+            prefs.contains(scopedKey(KEY_SPK_PUBLIC)) &&
+            prefs.contains(scopedKey(KEY_SPK_SIGNATURE))
 
     fun saveSharedSecret(sessionId: String, secret: ByteArray) {
         prefs.edit()
             .putString(scopedSessionKey(PREFIX_SHARED_SECRET, sessionId), encode(secret))
-            .apply()
+            .commitOrThrow()
     }
 
     fun getSharedSecret(sessionId: String): ByteArray? =
@@ -98,13 +91,13 @@ class SecureKeyStore(context: Context) {
     fun removeSharedSecret(sessionId: String) {
         prefs.edit()
             .remove(scopedSessionKey(PREFIX_SHARED_SECRET, sessionId))
-            .apply()
+            .commitOrThrow()
     }
 
     fun saveEphemeralPublicKey(sessionId: String, key: ByteArray) {
         prefs.edit()
             .putString(scopedSessionKey(PREFIX_EPHEMERAL_KEY, sessionId), encode(key))
-            .apply()
+            .commitOrThrow()
     }
 
     fun getEphemeralPublicKey(sessionId: String): ByteArray? =
@@ -113,7 +106,7 @@ class SecureKeyStore(context: Context) {
     fun removeEphemeralPublicKey(sessionId: String) {
         prefs.edit()
             .remove(scopedSessionKey(PREFIX_EPHEMERAL_KEY, sessionId))
-            .apply()
+            .commitOrThrow()
     }
 
     fun clearSessionMaterialForActiveUser() {
@@ -127,11 +120,11 @@ class SecureKeyStore(context: Context) {
 
         val editor = prefs.edit()
         keysToRemove.forEach(editor::remove)
-        editor.apply()
+        editor.commitOrThrow()
     }
 
     fun clearAll() {
-        prefs.edit().clear().apply()
+        prefs.edit().clear().commitOrThrow()
     }
 
     private fun encode(data: ByteArray): String =
@@ -139,6 +132,10 @@ class SecureKeyStore(context: Context) {
 
     private fun decode(encoded: String): ByteArray =
         Base64.decode(encoded, Base64.NO_WRAP)
+
+    private fun SharedPreferences.Editor.commitOrThrow() {
+        check(commit()) { "Failed to persist secure key store data" }
+    }
 
     companion object {
         private const val PREFS_FILE = "secure_key_store"

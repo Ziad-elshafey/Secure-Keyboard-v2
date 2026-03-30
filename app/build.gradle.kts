@@ -40,6 +40,14 @@ val projectVersionNameSuffix = projectVersionName.substringAfter("-", "").let { 
         suffix
     }
 }
+val releaseSecureApiBaseUrl = providers.gradleProperty("SECURE_API_BASE_URL")
+    .orElse("https://secure.example.invalid/")
+val debugSecureApiBaseUrl = providers.gradleProperty("DEBUG_SECURE_API_BASE_URL")
+    .orElse("http://10.0.2.2:8000/")
+val stegoEncodeBaseUrl = providers.gradleProperty("STEGO_ENCODE_BASE_URL")
+    .orElse("https://modalcd--encode.modal.run/")
+val stegoDecodeBaseUrl = providers.gradleProperty("STEGO_DECODE_BASE_URL")
+    .orElse("https://modalcd--decode.modal.run/")
 
 kotlin {
     compilerOptions {
@@ -67,7 +75,7 @@ configure<ApplicationExtension> {
     }
 
     defaultConfig {
-        applicationId = "dev.patrickgold.florisboard"
+        applicationId = "dev.patrickgold.florisboard.secure"
         minSdk = projectMinSdk.toInt()
         targetSdk = projectTargetSdk.toInt()
         versionCode = projectVersionCode.toInt()
@@ -78,6 +86,9 @@ configure<ApplicationExtension> {
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
+        buildConfigField("String", "SECURE_API_BASE_URL", "\"${releaseSecureApiBaseUrl.get()}\"")
+        buildConfigField("String", "STEGO_ENCODE_BASE_URL", "\"${stegoEncodeBaseUrl.get()}\"")
+        buildConfigField("String", "STEGO_DECODE_BASE_URL", "\"${stegoDecodeBaseUrl.get()}\"")
 
         sourceSets {
             maybeCreate("main").apply {
@@ -107,6 +118,7 @@ configure<ApplicationExtension> {
 
             isDebuggable = true
             isJniDebuggable = false
+            buildConfigField("String", "SECURE_API_BASE_URL", "\"${debugSecureApiBaseUrl.get()}\"")
         }
 
         create("beta") {

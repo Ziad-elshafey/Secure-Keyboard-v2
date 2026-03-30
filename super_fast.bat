@@ -31,7 +31,7 @@ if errorlevel 1 (
 
 echo.
 echo [1/2] Compiling Kotlin...
-call gradlew.bat :app:compileDebugKotlin --daemon --build-cache -q
+call gradlew.bat :app:compileDebugKotlin --build-cache -q
 if errorlevel 1 (
     echo [ERROR] Kotlin compilation failed
     exit /b 1
@@ -39,7 +39,7 @@ if errorlevel 1 (
 echo [OK] Compilation passed
 
 echo [2/2] Installing APK...
-call gradlew.bat installDebug --daemon --build-cache -x lint -x test -q
+call gradlew.bat installDebug --build-cache -x lint -x test -q
 if errorlevel 1 (
     echo [ERROR] Install failed
     exit /b 1

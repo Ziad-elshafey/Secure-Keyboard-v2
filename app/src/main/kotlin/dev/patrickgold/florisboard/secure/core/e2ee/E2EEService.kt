@@ -26,6 +26,7 @@ import java.security.SecureRandom
 object E2EEService {
     private val kdfInfoSharedSecret = "SecureMessaging_SharedSecret".toByteArray()
     private val kdfInfoMessageKey = "SecureMessaging_MessageKey".toByteArray()
+    private val packedMessageMagic = byteArrayOf(0x53, 0x4D, 0x31)
     private const val keyLength = 32
     private const val nonceLength = 12
     private const val tagLength = 16
@@ -97,30 +98,36 @@ object E2EEService {
         return hkdfDerive(dh1, kdfInfoSharedSecret, keyLength)
     }
 
-    fun encryptMessage(sharedSecret: ByteArray, plaintext: String): EncryptedMessage {
-        val messageKey = hkdfDerive(sharedSecret, kdfInfoMessageKey, keyLength)
+    fun encryptMessage(sharedSecret: ByteArray, plaintext: String): EncryptedMessage =
+        encryptMessage(sharedSecret, plaintext, counter = 0)
+
+    fun encryptMessage(sharedSecret: ByteArray, plaintext: String, counter: Int): EncryptedMessage =
+        encryptBytes(sharedSecret, plaintext.toByteArray(Charsets.UTF_8), counter)
+
+    fun encryptBytes(sharedSecret: ByteArray, payload: ByteArray): EncryptedMessage =
+        encryptBytes(sharedSecret, payload, counter = 0)
+
+    fun encryptBytes(sharedSecret: ByteArray, payload: ByteArray, counter: Int): EncryptedMessage {
+        val (messageKey, _) = deriveMessageKey(sharedSecret, counter)
         val nonce = ByteArray(nonceLength).also { random.nextBytes(it) }
-        val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
-        val ciphertext = chacha20Poly1305Encrypt(messageKey, nonce, plaintextBytes)
+        val ciphertext = chacha20Poly1305Encrypt(messageKey, nonce, payload, counterToAad(counter))
         return EncryptedMessage(ciphertext = ciphertext, nonce = nonce)
     }
 
-    fun encryptBytes(sharedSecret: ByteArray, payload: ByteArray): EncryptedMessage {
-        val messageKey = hkdfDerive(sharedSecret, kdfInfoMessageKey, keyLength)
-        val nonce = ByteArray(nonceLength).also { random.nextBytes(it) }
-        val ciphertext = chacha20Poly1305Encrypt(messageKey, nonce, payload)
-        return EncryptedMessage(ciphertext = ciphertext, nonce = nonce)
-    }
+    fun decryptMessage(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray): String =
+        decryptMessage(sharedSecret, ciphertext, nonce, counter = 0)
 
-    fun decryptMessage(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray): String {
-        val messageKey = hkdfDerive(sharedSecret, kdfInfoMessageKey, keyLength)
-        val plaintext = chacha20Poly1305Decrypt(messageKey, nonce, ciphertext)
+    fun decryptMessage(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray, counter: Int): String {
+        val plaintext = decryptToBytes(sharedSecret, ciphertext, nonce, counter)
         return String(plaintext, Charsets.UTF_8)
     }
 
-    fun decryptToBytes(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray): ByteArray {
-        val messageKey = hkdfDerive(sharedSecret, kdfInfoMessageKey, keyLength)
-        return chacha20Poly1305Decrypt(messageKey, nonce, ciphertext)
+    fun decryptToBytes(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray): ByteArray =
+        decryptToBytes(sharedSecret, ciphertext, nonce, counter = 0)
+
+    fun decryptToBytes(sharedSecret: ByteArray, ciphertext: ByteArray, nonce: ByteArray, counter: Int): ByteArray {
+        val (messageKey, _) = deriveMessageKey(sharedSecret, counter)
+        return chacha20Poly1305Decrypt(messageKey, nonce, ciphertext, counterToAad(counter))
     }
 
     fun toBase64(data: ByteArray): String =
@@ -128,6 +135,9 @@ object E2EEService {
 
     fun fromBase64(encoded: String): ByteArray =
         Base64.decode(encoded, Base64.NO_WRAP)
+
+    private fun counterToAad(counter: Int): ByteArray =
+        byteArrayOf((counter shr 8).toByte(), (counter and 0xFF).toByte())
 
     private fun x25519DH(
         privateKey: X25519PrivateKeyParameters,
@@ -149,18 +159,30 @@ object E2EEService {
         return output
     }
 
-    private fun chacha20Poly1305Encrypt(key: ByteArray, nonce: ByteArray, plaintext: ByteArray): ByteArray {
+    private fun chacha20Poly1305Encrypt(
+        key: ByteArray,
+        nonce: ByteArray,
+        plaintext: ByteArray,
+        aad: ByteArray? = null,
+    ): ByteArray {
         val cipher = ChaCha20Poly1305()
         cipher.init(true, AEADParameters(KeyParameter(key), tagLength * 8, nonce))
+        aad?.let { cipher.processAADBytes(it, 0, it.size) }
         val output = ByteArray(cipher.getOutputSize(plaintext.size))
         var len = cipher.processBytes(plaintext, 0, plaintext.size, output, 0)
         len += cipher.doFinal(output, len)
         return output.copyOf(len)
     }
 
-    private fun chacha20Poly1305Decrypt(key: ByteArray, nonce: ByteArray, ciphertextWithTag: ByteArray): ByteArray {
+    private fun chacha20Poly1305Decrypt(
+        key: ByteArray,
+        nonce: ByteArray,
+        ciphertextWithTag: ByteArray,
+        aad: ByteArray? = null,
+    ): ByteArray {
         val cipher = ChaCha20Poly1305()
         cipher.init(false, AEADParameters(KeyParameter(key), tagLength * 8, nonce))
+        aad?.let { cipher.processAADBytes(it, 0, it.size) }
         val output = ByteArray(cipher.getOutputSize(ciphertextWithTag.size))
         var len = cipher.processBytes(ciphertextWithTag, 0, ciphertextWithTag.size, output, 0)
         try {
@@ -198,12 +220,51 @@ object E2EEService {
         return ciphertext + byteArrayOf((counter shr 8).toByte(), (counter and 0xFF).toByte())
     }
 
+    fun packCiphertextWithNonceAndCounter(ciphertext: ByteArray, nonce: ByteArray, counter: Int): ByteArray {
+        require(nonce.size == nonceLength) { "Nonce must be $nonceLength bytes" }
+        require(counter in 0..65535) { "Counter must be 16-bit (0-65535)" }
+
+        val envelope = ByteArray(packedMessageMagic.size + 1 + nonce.size + 2 + ciphertext.size)
+        System.arraycopy(packedMessageMagic, 0, envelope, 0, packedMessageMagic.size)
+        envelope[packedMessageMagic.size] = nonce.size.toByte()
+        System.arraycopy(nonce, 0, envelope, packedMessageMagic.size + 1, nonce.size)
+        val counterOffset = packedMessageMagic.size + 1 + nonce.size
+        envelope[counterOffset] = (counter shr 8).toByte()
+        envelope[counterOffset + 1] = (counter and 0xFF).toByte()
+        System.arraycopy(ciphertext, 0, envelope, counterOffset + 2, ciphertext.size)
+        return envelope
+    }
+
     fun unpackCiphertextAndCounter(data: ByteArray): Pair<ByteArray, Int> {
         require(data.size >= 3) { "Data too short - need at least 1 byte ciphertext + 2 bytes counter" }
         val ciphertext = data.copyOfRange(0, data.size - 2)
         val counter = ((data[data.size - 2].toInt() and 0xFF) shl 8) or
             (data[data.size - 1].toInt() and 0xFF)
         return ciphertext to counter
+    }
+
+    fun unpackMessageEnvelope(data: ByteArray): PackedMessageEnvelope {
+        if (
+            data.size >= packedMessageMagic.size + 1 + nonceLength + 2 + 1 &&
+            data.copyOfRange(0, packedMessageMagic.size).contentEquals(packedMessageMagic)
+        ) {
+            val encodedNonceLength = data[packedMessageMagic.size].toInt() and 0xFF
+            require(encodedNonceLength == nonceLength) { "Unsupported nonce length: $encodedNonceLength" }
+
+            val nonceStart = packedMessageMagic.size + 1
+            val counterStart = nonceStart + encodedNonceLength
+            val ciphertextStart = counterStart + 2
+            require(data.size > ciphertextStart) { "Packed AEAD payload is missing ciphertext" }
+
+            val nonce = data.copyOfRange(nonceStart, counterStart)
+            val counter = ((data[counterStart].toInt() and 0xFF) shl 8) or
+                (data[counterStart + 1].toInt() and 0xFF)
+            val ciphertext = data.copyOfRange(ciphertextStart, data.size)
+            return PackedMessageEnvelope(ciphertext = ciphertext, counter = counter, nonce = nonce)
+        }
+
+        val (ciphertext, counter) = unpackCiphertextAndCounter(data)
+        return PackedMessageEnvelope(ciphertext = ciphertext, counter = counter, nonce = null)
     }
 
     private fun bareChaCha20(key: ByteArray, nonce16: ByteArray, input: ByteArray): ByteArray {

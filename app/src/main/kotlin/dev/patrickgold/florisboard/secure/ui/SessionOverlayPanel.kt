@@ -1,6 +1,4 @@
 package dev.patrickgold.florisboard.secure.ui
-
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -34,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -46,8 +45,9 @@ data class SessionItem(
     val sessionId: String,
     val peerUsername: String,
     val isActive: Boolean,
-    val canSend: Boolean,
+    val canSelect: Boolean,
     val statusText: String? = null,
+    val statusIsError: Boolean = false,
 )
 
 @Composable
@@ -58,49 +58,49 @@ fun SessionOverlayPanel() {
 
     var isLoading by remember { mutableStateOf(true) }
     val sessions = remember { mutableStateListOf<SessionItem>() }
+    var activeSessionId by remember { mutableStateOf(secureManager.getActiveSession()?.sessionId) }
+    var activeRecipient by remember { mutableStateOf(secureManager.getActiveSession()?.recipientName.orEmpty()) }
 
     LaunchedEffect(Unit) {
         isLoading = true
         withContext(Dispatchers.IO) {
             try {
                 val repo = secureManager.secureMessagingRepository
-                val result = repo.listSessions()
+                val result = repo.listSessions(activeOnly = false)
                 val myUserId = repo.getUserId()
                 result.getOrNull()?.let { list ->
-                    val items = list.filter { it.isActive }.map { session ->
+                    val items = list.map { session ->
                         val peer = if (session.initiatorId == myUserId) {
                             session.responderUsername
                         } else {
                             session.initiatorUsername
                         }
-                        val canSend = repo.canSendToSession(session)
+                        val canSelect = repo.canSelectSession(session)
+                        val statusText = repo.describeSessionStatus(session)
                         SessionItem(
                             sessionId = session.sessionId,
                             peerUsername = peer,
                             isActive = session.isActive,
-                            canSend = canSend,
-                            statusText = if (repo.requiresSessionRecreationForSend(session)) {
-                                "Recreate session on this device"
-                            } else if (!canSend) {
-                                "Send not ready on this device"
-                            } else {
-                                null
-                            },
+                            canSelect = canSelect,
+                            statusText = statusText,
+                            statusIsError = statusText != null && (!canSelect || session.isActive),
                         )
                     }
                     sessions.clear()
                     sessions.addAll(items)
+                    val activeSelection = secureManager.reconcileActiveSession(list)
+                    activeSessionId = activeSelection?.sessionId
+                    activeRecipient = activeSelection?.recipientName.orEmpty()
                 }
             } catch (_: Exception) {
                 sessions.clear()
+                secureManager.clearActiveSession()
+                activeSessionId = null
+                activeRecipient = ""
             }
             isLoading = false
         }
     }
-
-    val prefs = context.getSharedPreferences("secure_active_session", Context.MODE_PRIVATE)
-    val activeSessionId = prefs.getString("session_id", null)
-    val activeRecipient = prefs.getString("recipient_name", null) ?: ""
 
     Column(
         modifier = Modifier
@@ -134,7 +134,7 @@ fun SessionOverlayPanel() {
                     .padding(horizontal = 12.dp),
             ) {
                 Text(
-                    text = "Active session",
+                    text = "Selected session",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -154,13 +154,15 @@ fun SessionOverlayPanel() {
         ) {
             Button(
                 onClick = {
-                    prefs.edit().remove("session_id").remove("recipient_name").apply()
+                    secureManager.clearActiveSession()
+                    activeSessionId = null
+                    activeRecipient = ""
                     keyboardManager.activeState.isSecureSessionVisible = false
                 },
                 enabled = activeRecipient.isNotEmpty(),
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Clear Active")
+                Text("Clear Selected")
             }
             Button(
                 onClick = {
@@ -187,7 +189,7 @@ fun SessionOverlayPanel() {
             }
         } else if (sessions.isEmpty()) {
             Text(
-                text = "No active sessions",
+                text = "No sessions",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -203,11 +205,11 @@ fun SessionOverlayPanel() {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                prefs.edit()
-                                    .putString("session_id", session.sessionId)
-                                    .putString("recipient_name", session.peerUsername)
-                                    .apply()
+                            .alpha(if (session.canSelect) 1f else 0.55f)
+                            .clickable(enabled = session.canSelect) {
+                                secureManager.setActiveSession(session.sessionId, session.peerUsername)
+                                activeSessionId = session.sessionId
+                                activeRecipient = session.peerUsername
                                 keyboardManager.activeState.isSecureSessionVisible = false
                             }
                             .background(
@@ -227,18 +229,34 @@ fun SessionOverlayPanel() {
                             Text(
                                 text = session.peerUsername,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = if (session.canSend) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (session.canSelect) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (session.statusText != null) {
                                 Text(
                                     text = session.statusText,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
+                                    color = if (session.statusIsError) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
                                 )
                             }
                         }
                         if (isSelected) {
-                            Text(text = "✓", color = MaterialTheme.colorScheme.primary)
+                            Text(text = "Selected", color = MaterialTheme.colorScheme.primary)
+                        } else if (!session.canSelect) {
+                            Text(
+                                text = "Blocked",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else if (!session.isActive) {
+                            Text(
+                                text = "History",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                 }

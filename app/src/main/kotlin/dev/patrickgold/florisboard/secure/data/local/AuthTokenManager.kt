@@ -3,21 +3,10 @@ package dev.patrickgold.florisboard.secure.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 
 class AuthTokenManager(context: Context) {
     private val prefs: SharedPreferences by lazy {
-        val masterKey = MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context.applicationContext,
-            PREFS_FILE,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        EncryptedPrefsFactory.create(context.applicationContext, PREFS_FILE)
     }
 
     fun getAccessToken(): String? = prefs.getString(KEY_ACCESS_TOKEN, null)
@@ -28,7 +17,7 @@ class AuthTokenManager(context: Context) {
         prefs.edit()
             .putString(KEY_ACCESS_TOKEN, accessToken)
             .putString(KEY_REFRESH_TOKEN, refreshToken)
-            .apply()
+            .commitOrThrow()
     }
 
     fun getUserId(): String? = prefs.getString(KEY_USER_ID, null)
@@ -39,10 +28,10 @@ class AuthTokenManager(context: Context) {
         prefs.edit()
             .putString(KEY_USER_ID, userId)
             .putString(KEY_USERNAME, username)
-            .apply()
+            .commitOrThrow()
     }
 
-    fun isLoggedIn(): Boolean = getAccessToken() != null
+    fun isLoggedIn(): Boolean = !getAccessToken().isNullOrBlank()
 
     fun isAccessTokenExpired(): Boolean {
         val token = getAccessToken() ?: return true
@@ -60,7 +49,18 @@ class AuthTokenManager(context: Context) {
     }
 
     fun clearAll() {
-        prefs.edit().clear().apply()
+        prefs.edit().clear().commitOrThrow()
+    }
+
+    fun clearTokens() {
+        prefs.edit()
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_REFRESH_TOKEN)
+            .commitOrThrow()
+    }
+
+    private fun SharedPreferences.Editor.commitOrThrow() {
+        check(commit()) { "Failed to persist auth token data" }
     }
 
     companion object {

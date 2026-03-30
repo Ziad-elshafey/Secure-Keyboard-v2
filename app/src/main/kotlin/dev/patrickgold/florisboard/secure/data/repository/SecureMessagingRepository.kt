@@ -1,11 +1,15 @@
 package dev.patrickgold.florisboard.secure.data.repository
 
 import android.util.Log
+import com.google.gson.Gson
+import dev.patrickgold.florisboard.BuildConfig
 import dev.patrickgold.florisboard.secure.core.e2ee.E2EEService
+import dev.patrickgold.florisboard.secure.data.local.ActiveSessionStore
 import dev.patrickgold.florisboard.secure.data.local.AuthTokenManager
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
 import dev.patrickgold.florisboard.secure.data.remote.CreateSessionRequest
 import dev.patrickgold.florisboard.secure.data.remote.DeobfuscateRequest
+import dev.patrickgold.florisboard.secure.data.remote.DuplicateSessionConflictResponse
 import dev.patrickgold.florisboard.secure.data.remote.LoginRequest
 import dev.patrickgold.florisboard.secure.data.remote.ObfuscateRequest
 import dev.patrickgold.florisboard.secure.data.remote.RefreshTokenRequest
@@ -19,6 +23,9 @@ import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeRequest
 import dev.patrickgold.florisboard.secure.data.remote.UploadKeysRequest
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
 import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import retrofit2.HttpException
 
 class SecureMessagingRepository(
     private val api: SecureApiService,
@@ -26,60 +33,39 @@ class SecureMessagingRepository(
     private val stegoDecodeApi: StegoDecodeApiService,
     private val tokenManager: AuthTokenManager,
     private val keyStore: SecureKeyStore,
+    private val activeSessionStore: ActiveSessionStore,
 ) {
     companion object {
         private const val tag = "SecureMessagingRepo"
         const val flagRaw: Byte = 0x00
         const val flagCompressed: Byte = 0x01
         private const val defaultStegoContext = "car"
+        const val localSecureIdentityMissingMessage =
+            "Local secure identity missing on this device. Reuse the original installation or deactivate old sessions before creating a replacement."
+        const val activeSecureSessionExistsMessage =
+            "Active secure session already exists. Reuse it or deactivate it first."
+        const val historicalSessionKeyMissingMessage =
+            "This device no longer has the original session key for this message."
+        private const val historicalDecryptOnlyMessage = "Decrypt old messages only"
+        private const val recreateOnThisDeviceMessage = "Deactivate and recreate on this device"
+        private const val sendNotReadyMessage = "Send not ready on this device"
+        private val gson = Gson()
     }
 
-    private val compressionEnabled: Boolean by lazy {
-        try {
-            CompressionService.compress("test")
-            true
-        } catch (_: Exception) {
-            Log.w(tag, "Compression vocab unavailable - falling back to raw mode")
-            false
-        }
-    }
+    private val compressionEnabled: Boolean = false
+
+    private val sessionCreationMutex = Mutex()
 
     suspend fun register(username: String, password: String): Result<String> = runCatching {
         val email = "$username@example.com"
         val response = api.register(RegisterRequest(username, email, password))
-        tokenManager.saveTokens(response.accessToken, response.refreshToken)
-        tokenManager.saveUserInfo(response.userId, response.username)
-        keyStore.setActiveUser(response.userId)
-
         val identityKeyPair = E2EEService.generateIdentityKeyPair()
         val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
 
-        api.uploadKeys(
-            UploadKeysRequest(
-                identityKeyPublic = E2EEService.toBase64(identityKeyPair.publicKey),
-                signedPrekeyPublic = E2EEService.toBase64(signedPreKey.publicKey),
-                signedPrekeySignature = E2EEService.toBase64(signedPreKey.signature),
-                signedPrekeyId = signedPreKey.keyId,
-            ),
-        )
-
-        keyStore.saveIdentityKeyPair(identityKeyPair)
-        keyStore.saveSignedPreKey(signedPreKey)
-
-        response.userId
-    }
-
-    suspend fun login(username: String, password: String): Result<String> = runCatching {
-        val response = api.login(LoginRequest(username, password))
-        tokenManager.saveTokens(response.accessToken, response.refreshToken)
-
-        val user = api.getCurrentUser()
-        tokenManager.saveUserInfo(user.userId, user.username)
-        keyStore.setActiveUser(user.userId)
-
-        if (!keyStore.hasIdentityKeys()) {
-            val identityKeyPair = E2EEService.generateIdentityKeyPair()
-            val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
+        try {
+            tokenManager.saveTokens(response.accessToken, response.refreshToken)
+            tokenManager.saveUserInfo(response.userId, response.username)
+            keyStore.setActiveUser(response.userId)
 
             api.uploadKeys(
                 UploadKeysRequest(
@@ -92,9 +78,69 @@ class SecureMessagingRepository(
 
             keyStore.saveIdentityKeyPair(identityKeyPair)
             keyStore.saveSignedPreKey(signedPreKey)
+        } catch (e: Exception) {
+            clearLocalSecureState()
+            throw e
         }
 
-        user.userId
+        response.userId
+    }
+
+    suspend fun login(username: String, password: String): Result<String> = runCatching {
+        val response = api.login(LoginRequest(username, password))
+        try {
+            tokenManager.saveTokens(response.accessToken, response.refreshToken)
+
+            val user = api.getCurrentUser()
+            tokenManager.saveUserInfo(user.userId, user.username)
+            keyStore.setActiveUser(user.userId)
+
+            if (!hasLocalSecureIdentity()) {
+                val keyStatus = api.getKeyStatus()
+                if (keyStatus.hasIdentityKey || keyStatus.hasSignedPrekey) {
+                    debugLog { "login: server keys exist but local secure identity is missing" }
+                } else {
+                    val identityKeyPair = E2EEService.generateIdentityKeyPair()
+                    val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
+
+                    api.uploadKeys(
+                        UploadKeysRequest(
+                            identityKeyPublic = E2EEService.toBase64(identityKeyPair.publicKey),
+                            signedPrekeyPublic = E2EEService.toBase64(signedPreKey.publicKey),
+                            signedPrekeySignature = E2EEService.toBase64(signedPreKey.signature),
+                            signedPrekeyId = signedPreKey.keyId,
+                        ),
+                    )
+
+                    keyStore.saveIdentityKeyPair(identityKeyPair)
+                    keyStore.saveSignedPreKey(signedPreKey)
+                }
+            }
+
+            user.userId
+        } catch (e: Exception) {
+            clearLocalSecureState()
+            throw e
+        }
+    }
+
+    private fun hasLocalSecureIdentity(): Boolean =
+        keyStore.hasIdentityKeys() && keyStore.hasSignedPreKey()
+
+    fun isLocalSecureIdentityMissing(): Boolean =
+        tokenManager.isLoggedIn() && !hasLocalSecureIdentity()
+
+    private fun requireLocalSecureIdentityAvailable() {
+        if (!hasLocalSecureIdentity()) {
+            error(localSecureIdentityMissingMessage)
+        }
+    }
+
+    private fun parseDuplicateSessionConflict(exception: HttpException): DuplicateSessionConflictResponse? {
+        val payload = exception.response()?.errorBody()?.string()?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching {
+            gson.fromJson(payload, DuplicateSessionConflictResponse::class.java)
+        }.getOrNull()
     }
 
     fun isLoggedIn(): Boolean = tokenManager.isLoggedIn()
@@ -103,98 +149,122 @@ class SecureMessagingRepository(
 
     fun getUserId(): String? = tokenManager.getUserId()
 
-    fun logout() {
-        if (keyStore.hasActiveUser()) {
-            keyStore.clearSessionMaterialForActiveUser()
-            keyStore.clearActiveUser()
+    suspend fun logout(): Result<Unit> = runCatching {
+        var remoteFailure: Throwable? = null
+        if (tokenManager.isLoggedIn()) {
+            runCatching { api.logout() }
+                .onFailure { remoteFailure = it }
         }
-        tokenManager.clearAll()
+        clearLocalSecureState()
+        remoteFailure?.let { throw it }
     }
 
     suspend fun searchUsers(query: String): Result<List<UserSearchResult>> = runCatching {
         api.searchUsers(query)
     }
 
-    suspend fun createSession(peerUsername: String, peerUserId: String): Result<SessionInfo> = runCatching {
-        val myUserId = tokenManager.getUserId()
-            ?: error("Not logged in - no user ID available")
+    suspend fun createSession(peerUsername: String, peerUserId: String): Result<SessionInfo> =
+        sessionCreationMutex.withLock {
+            runCatching {
+                requireLocalSecureIdentityAvailable()
+                val myUserId = tokenManager.getUserId()
+                    ?: error("Not logged in - no user ID available")
 
-        val bundle = api.getKeyBundle(peerUserId)
-        val identityKeyPub = E2EEService.fromBase64(bundle.identityKeyPublic)
-        val signedPreKeyPub = E2EEService.fromBase64(bundle.signedPrekeyPublic)
-        val signature = E2EEService.fromBase64(bundle.signedPrekeySignature)
+                val bundle = api.getKeyBundle(peerUserId)
+                val identityKeyPub = E2EEService.fromBase64(bundle.identityKeyPublic)
+                val signedPreKeyPub = E2EEService.fromBase64(bundle.signedPrekeyPublic)
+                val signature = E2EEService.fromBase64(bundle.signedPrekeySignature)
 
-        check(E2EEService.ed25519Verify(identityKeyPub, signedPreKeyPub, signature)) {
-            "Recipient's signed pre-key signature is invalid - possible MITM"
-        }
+                check(E2EEService.ed25519Verify(identityKeyPub, signedPreKeyPub, signature)) {
+                    "Recipient's signed pre-key signature is invalid - possible MITM"
+                }
 
-        val x3dhInitResult = E2EEService.x3dhInitiate(recipientSignedPreKeyPublic = signedPreKeyPub)
+                val x3dhInitResult = E2EEService.x3dhInitiate(recipientSignedPreKeyPublic = signedPreKeyPub)
 
-        val session = api.createSession(
-            CreateSessionRequest(
-                peerUsername = peerUsername,
-                ephemeralPublicKey = E2EEService.toBase64(x3dhInitResult.ephemeralPublicKey),
-            ),
-        )
+                val session = try {
+                    api.createSession(
+                        CreateSessionRequest(
+                            peerUsername = peerUsername,
+                            ephemeralPublicKey = E2EEService.toBase64(x3dhInitResult.ephemeralPublicKey),
+                        ),
+                    )
+                } catch (e: HttpException) {
+                    if (e.code() == 409) {
+                        val conflict = parseDuplicateSessionConflict(e)
+                        if (conflict != null) {
+                            val conflictPeerUsername = if (conflict.initiatorId == myUserId) {
+                                conflict.responderUsername
+                            } else {
+                                conflict.initiatorUsername
+                            }
+                            if (keyStore.hasSharedSecret(conflict.existingSessionId)) {
+                                debugLog { "createSession: reusing existing active session already cached locally" }
+                                return@runCatching SessionInfo(
+                                    sessionId = conflict.existingSessionId,
+                                    peerUsername = conflictPeerUsername,
+                                    reusedExisting = true,
+                                )
+                            }
+                            throw DuplicateSessionConflictException(conflict)
+                        }
+                    }
+                    throw e
+                }
 
-        if (keyStore.hasSharedSecret(session.sessionId)) {
-            Log.d(tag, "createSession: shared secret already cached for ${session.sessionId}")
-            return@runCatching SessionInfo(sessionId = session.sessionId, peerUsername = peerUsername)
-        }
+                val weAreInitiator = session.initiatorId == myUserId
+                debugLog { "createSession: derived role for current device" }
 
-        val weAreInitiator = session.initiatorId == myUserId
-        Log.d(tag, "createSession: weAreInitiator=$weAreInitiator (myId=$myUserId, initiatorId=${session.initiatorId})")
+                val sharedSecret = if (weAreInitiator) {
+                    keyStore.saveEphemeralPublicKey(session.sessionId, x3dhInitResult.ephemeralPublicKey)
+                    debugLog { "createSession: initiator material persisted locally" }
+                    x3dhInitResult.sharedSecret
+                } else {
+                    val initiatorEphPub = fetchInitiatorEphemeralKeyForSession(session.sessionId, peerUsername)
 
-        val sharedSecret = if (weAreInitiator) {
-            keyStore.saveEphemeralPublicKey(session.sessionId, x3dhInitResult.ephemeralPublicKey)
-            Log.d(tag, "createSession: initiator path - saved ephemeral + shared secret")
-            x3dhInitResult.sharedSecret
-        } else {
-            val ephemeralData = api.getEphemeralKey(session.sessionId)
-            val initiatorEphPub = E2EEService.fromBase64(ephemeralData.ephemeralPublicKey)
+                    val signedPreKey = keyStore.getSignedPreKey()
+                        ?: error("No signed pre-key found - cannot respond to X3DH")
 
-            val signedPreKey = keyStore.getSignedPreKey()
-                ?: error("No signed pre-key found - cannot respond to X3DH")
+                    E2EEService.x3dhRespond(
+                        signedPreKeyPrivate = signedPreKey.privateKey,
+                        ephemeralPublicKey = initiatorEphPub,
+                    ).also {
+                        debugLog { "createSession: responder shared secret derived" }
+                    }
+                }
 
-            E2EEService.x3dhRespond(
-                signedPreKeyPrivate = signedPreKey.privateKey,
-                ephemeralPublicKey = initiatorEphPub,
-            ).also {
-                Log.d(tag, "createSession: responder path - derived shared secret via x3dhRespond")
+                keyStore.saveSharedSecret(session.sessionId, sharedSecret)
+
+                SessionInfo(
+                    sessionId = session.sessionId,
+                    peerUsername = peerUsername,
+                )
             }
         }
 
-        keyStore.saveSharedSecret(session.sessionId, sharedSecret)
-
-        SessionInfo(sessionId = session.sessionId, peerUsername = peerUsername)
-    }
-
-    suspend fun listSessions(): Result<List<SessionResponse>> = runCatching {
-        api.listSessions()
+    suspend fun listSessions(activeOnly: Boolean = true): Result<List<SessionResponse>> = runCatching {
+        api.listSessions(activeOnly = activeOnly)
     }
 
     suspend fun deactivateSession(sessionId: String): Result<Unit> = runCatching {
         api.deactivateSession(sessionId)
-        keyStore.removeSharedSecret(sessionId)
         keyStore.removeEphemeralPublicKey(sessionId)
+        activeSessionStore.clearIfSessionMatches(sessionId)
     }
 
     suspend fun sendMessage(sessionId: String, peerUsername: String, plaintext: String): Result<SendResult> = runCatching {
+        requireLocalSecureIdentityAvailable()
         val sharedSecret = getOrEstablishSharedSecretForSend(sessionId, peerUsername)
 
         val counterResp = api.getNextCounter(sessionId)
         val counter = counterResp.counter
-        Log.d(tag, "sendMessage: got counter=$counter for session=$sessionId peer=$peerUsername")
+        debugLog { "sendMessage: acquired outbound counter" }
 
         val payload = buildPayload(plaintext)
-        val ciphertext = E2EEService.chacha20Encrypt(payload, sharedSecret, counter)
-        val packed = E2EEService.packCiphertextWithCounter(ciphertext, counter)
+        val encrypted = E2EEService.encryptBytes(sharedSecret, payload, counter)
+        val packed = E2EEService.packCiphertextWithNonceAndCounter(encrypted.ciphertext, encrypted.nonce, counter)
         val packedBits = packed.toBitString()
 
-        Log.d(
-            tag,
-            "sendMessage: raw=${plaintext.toByteArray().size}B, payload=${payload.size}B (flag=0x%02X), cipher=${ciphertext.size}B, packed=${packed.size}B, counter=$counter".format(payload[0]),
-        )
+        debugLog { "sendMessage: packed authenticated payload" }
 
         val obfuscatedText = try {
             stegoEncodeApi.encode(
@@ -204,11 +274,12 @@ class SecureMessagingRepository(
                 ),
             ).text
         } catch (e: Exception) {
-            Log.w(tag, "Modal stego encode failed (${e.message}) - falling back to server obfuscation")
+            warnLog("Modal stego encode failed, falling back to server obfuscation", e)
             api.obfuscate(
                 ObfuscateRequest(
                     ciphertextB64 = E2EEService.toBase64(packed),
                     peerUsername = peerUsername,
+                    sessionId = sessionId,
                 ),
             ).obfuscatedText
         }
@@ -216,45 +287,105 @@ class SecureMessagingRepository(
         SendResult(obfuscatedText = obfuscatedText)
     }
 
-    suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<String> = runCatching {
-        Log.d(tag, "decryptMessage: sender=$senderUsername")
+    suspend fun decryptMessage(
+        obfuscatedText: String,
+        senderUsername: String,
+        preferredSessionId: String? = null,
+    ): Result<String> = runCatching {
+        requireLocalSecureIdentityAvailable()
+        val packed = decodePackedMessage(
+            obfuscatedText = obfuscatedText,
+            senderUsername = senderUsername,
+            preferredSessionId = preferredSessionId,
+        )
 
-        val packed: ByteArray = try {
-            bitStringToByteArray(stegoDecodeApi.decode(StegoDecodeRequest(text = obfuscatedText)).bits)
-        } catch (e: Exception) {
-            Log.w(tag, "Modal stego decode failed (${e.message}) - falling back to server deobfuscation")
-            E2EEService.fromBase64(
-                api.deobfuscate(DeobfuscateRequest(obfuscatedText, senderUsername)).ciphertextB64,
-            )
+        val sessions = api.listSessions(activeOnly = preferredSessionId.isNullOrBlank())
+        val myUserId = tokenManager.getUserId()
+            ?: error("Not logged in - no user ID available")
+        val matchingSessions = sessions.filter { session ->
+            peerUsernameForSession(session, myUserId).equals(senderUsername, ignoreCase = true)
+        }
+        val session = if (!preferredSessionId.isNullOrBlank()) {
+            matchingSessions.firstOrNull { it.sessionId == preferredSessionId }
+                ?: run {
+                    activeSessionStore.clearIfSessionMatches(preferredSessionId)
+                    error("No session found with $senderUsername")
+                }
+        } else {
+            when (matchingSessions.size) {
+                0 -> error("No active session found with $senderUsername")
+                1 -> matchingSessions.single()
+                else -> error("Multiple active sessions found with $senderUsername. Select the intended session first.")
+            }
         }
 
-        val sessions = api.listSessions(activeOnly = true)
-        val session = sessions.firstOrNull { s ->
-            s.initiatorUsername == senderUsername || s.responderUsername == senderUsername
-        } ?: error("No active session found with $senderUsername")
-
-        val sharedSecret = getOrEstablishSharedSecretForReceive(session.sessionId)
-        val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(packed)
-        Log.d(tag, "decryptMessage: packed=${packed.size}B ciphertext=${ciphertext.size}B counter=$counter")
-
-        val payload = E2EEService.chacha20Decrypt(ciphertext, sharedSecret, counter)
+        val sharedSecret = getOrEstablishSharedSecretForReceive(session)
+        val envelope = E2EEService.unpackMessageEnvelope(packed)
+        val payload = if (envelope.usesAead) {
+            E2EEService.decryptToBytes(
+                sharedSecret = sharedSecret,
+                ciphertext = envelope.ciphertext,
+                nonce = checkNotNull(envelope.nonce),
+                counter = envelope.counter,
+            )
+        } else {
+            E2EEService.chacha20Decrypt(envelope.ciphertext, sharedSecret, envelope.counter)
+        }
         val plaintext = parsePayload(payload)
-        Log.d(tag, "decryptMessage: success plaintext=${plaintext.take(50)}...")
+        debugLog { "decryptMessage: completed using ${if (envelope.usesAead) "authenticated" else "legacy"} format" }
         plaintext
     }.onFailure { e ->
-        Log.e(tag, "decryptMessage: failed", e)
+        errorLog("decryptMessage failed", e)
     }
 
     fun canSendToSession(session: SessionResponse): Boolean {
+        if (isLocalSecureIdentityMissing()) return false
+        if (!session.isActive) return false
         if (keyStore.hasSharedSecret(session.sessionId)) return true
 
         val myUserId = tokenManager.getUserId() ?: return false
-        return session.responderId == myUserId && keyStore.hasSignedPreKey()
+        return session.responderId == myUserId && keyStore.hasSignedPreKey() && session.lastCounter == 0
     }
 
     fun requiresSessionRecreationForSend(session: SessionResponse): Boolean {
+        if (isLocalSecureIdentityMissing()) return false
+        if (!session.isActive) return false
         val myUserId = tokenManager.getUserId() ?: return false
-        return !keyStore.hasSharedSecret(session.sessionId) && session.initiatorId == myUserId
+        if (keyStore.hasSharedSecret(session.sessionId)) return false
+        return session.initiatorId == myUserId ||
+            (session.responderId == myUserId && session.lastCounter > 0)
+    }
+
+    fun canDecryptHistoricalSession(session: SessionResponse): Boolean =
+        !session.isActive && !isLocalSecureIdentityMissing() && keyStore.hasSharedSecret(session.sessionId)
+
+    fun canSelectSession(session: SessionResponse): Boolean {
+        if (isLocalSecureIdentityMissing()) return false
+        return if (session.isActive) {
+            canSendToSession(session)
+        } else {
+            canDecryptHistoricalSession(session)
+        }
+    }
+
+    fun describeSessionStatus(session: SessionResponse): String? {
+        if (isLocalSecureIdentityMissing()) {
+            return localSecureIdentityMissingMessage
+        }
+        if (!session.isActive) {
+            return if (keyStore.hasSharedSecret(session.sessionId)) {
+                historicalDecryptOnlyMessage
+            } else {
+                historicalSessionKeyMissingMessage
+            }
+        }
+        if (requiresSessionRecreationForSend(session)) {
+            return recreateOnThisDeviceMessage
+        }
+        if (!canSendToSession(session)) {
+            return sendNotReadyMessage
+        }
+        return null
     }
 
     private suspend fun getOrEstablishSharedSecretForSend(sessionId: String, peerUsername: String): ByteArray {
@@ -269,15 +400,14 @@ class SecureMessagingRepository(
             val signedPreKey = keyStore.getSignedPreKey()
                 ?: error("Secure keys unavailable on this device - log in again")
 
-            val ephemeralData = api.getEphemeralKey(sessionId)
-            val ephemeralPub = E2EEService.fromBase64(ephemeralData.ephemeralPublicKey)
+            val ephemeralPub = fetchInitiatorEphemeralKeyForSession(sessionId, peerUsername)
             val sharedSecret = E2EEService.x3dhRespond(
                 signedPreKeyPrivate = signedPreKey.privateKey,
                 ephemeralPublicKey = ephemeralPub,
             )
 
             keyStore.saveSharedSecret(sessionId, sharedSecret)
-            Log.d(tag, "sendMessage: recovered responder shared secret for session=$sessionId")
+            debugLog { "sendMessage: recovered responder shared secret" }
             return sharedSecret
         }
 
@@ -288,21 +418,27 @@ class SecureMessagingRepository(
         error("Cannot use session $sessionId for the current user")
     }
 
-    private suspend fun getOrEstablishSharedSecretForReceive(sessionId: String): ByteArray {
-        val cached = keyStore.getSharedSecret(sessionId)
+    private suspend fun getOrEstablishSharedSecretForReceive(session: SessionResponse): ByteArray {
+        val cached = keyStore.getSharedSecret(session.sessionId)
         if (cached != null) return cached
 
-        val ephemeralData = api.getEphemeralKey(sessionId)
+        if (!session.isActive) {
+            error(historicalSessionKeyMissingMessage)
+        }
+
         val signedPreKey = keyStore.getSignedPreKey()
             ?: error("No signed pre-key found - cannot respond to X3DH")
 
-        val ephemeralPub = E2EEService.fromBase64(ephemeralData.ephemeralPublicKey)
+        val ephemeralPub = fetchInitiatorEphemeralKeyForSession(
+            sessionId = session.sessionId,
+            peerUsername = null,
+        )
         val sharedSecret = E2EEService.x3dhRespond(
             signedPreKeyPrivate = signedPreKey.privateKey,
             ephemeralPublicKey = ephemeralPub,
         )
 
-        keyStore.saveSharedSecret(sessionId, sharedSecret)
+        keyStore.saveSharedSecret(session.sessionId, sharedSecret)
         return sharedSecret
     }
 
@@ -313,9 +449,7 @@ class SecureMessagingRepository(
             try {
                 val compressed = CompressionService.compress(plaintext)
                 if (compressed.isNotEmpty() && compressed.size < rawBytes.size) {
-                    val bitsPerWord = CompressionService.getBitsPerWord(plaintext, compressed.size)
-                    val savings = CompressionService.getSavingsPercent(rawBytes.size, compressed.size)
-                    Log.d(tag, "Compression: ${rawBytes.size}B -> ${compressed.size}B (%.1f%% saved, %.1f bits/word)".format(savings, bitsPerWord))
+                    debugLog { "buildPayload: compressed payload selected" }
 
                     return ByteArray(1 + compressed.size).also {
                         it[0] = flagCompressed
@@ -323,7 +457,7 @@ class SecureMessagingRepository(
                     }
                 }
             } catch (e: Exception) {
-                Log.w(tag, "Compression failed, falling back to raw", e)
+                warnLog("Compression failed, falling back to raw payload", e)
             }
         }
 
@@ -341,14 +475,11 @@ class SecureMessagingRepository(
 
         return when (flag) {
             flagCompressed -> {
-                Log.d(tag, "Decompressing ${data.size}B payload")
+                debugLog { "parsePayload: decompressing payload" }
                 CompressionService.decompress(data)
             }
             flagRaw -> String(data, Charsets.UTF_8)
-            else -> {
-                Log.w(tag, "Unknown payload flag 0x%02X - treating as raw".format(flag))
-                String(data, Charsets.UTF_8)
-            }
+            else -> error("Unsupported payload flag 0x%02X".format(flag))
         }
     }
 
@@ -373,6 +504,106 @@ class SecureMessagingRepository(
     }
 
     private fun buildStegoContext(): String = defaultStegoContext
+
+    private suspend fun decodePackedMessage(
+        obfuscatedText: String,
+        senderUsername: String,
+        preferredSessionId: String?,
+    ): ByteArray {
+        decodeLocalBase64PackedMessage(obfuscatedText)?.let {
+            debugLog { "decodePackedMessage: decoded compact base64 transport locally" }
+            return it
+        }
+
+        val modalPacked = runCatching {
+            validatePackedMessage(
+                bitStringToByteArray(stegoDecodeApi.decode(StegoDecodeRequest(text = obfuscatedText)).bits),
+            )
+        }.getOrElse { e ->
+            warnLog("Modal stego decode failed, falling back to server deobfuscation", e)
+            return validatePackedMessage(
+                E2EEService.fromBase64(
+                    api.deobfuscate(
+                        DeobfuscateRequest(
+                            obfuscatedText = obfuscatedText,
+                            senderUsername = senderUsername,
+                            sessionId = preferredSessionId,
+                        ),
+                    ).ciphertextB64,
+                ),
+            )
+        }
+
+        return modalPacked
+    }
+
+    private fun decodeLocalBase64PackedMessage(obfuscatedText: String): ByteArray? {
+        val compactText = obfuscatedText.trim()
+        if (compactText.isEmpty()) return null
+        if (compactText.any { it.isWhitespace() }) return null
+
+        return runCatching {
+            validatePackedMessage(E2EEService.fromBase64(compactText))
+        }.getOrNull()
+    }
+
+    private fun validatePackedMessage(packed: ByteArray): ByteArray {
+        E2EEService.unpackMessageEnvelope(packed)
+        return packed
+    }
+
+    private fun clearLocalSecureState() {
+        activeSessionStore.clear()
+        if (keyStore.hasActiveUser()) {
+            keyStore.clearSessionMaterialForActiveUser()
+            keyStore.clearActiveUser()
+        }
+        tokenManager.clearAll()
+    }
+
+    private fun peerUsernameForSession(session: SessionResponse, myUserId: String): String =
+        if (session.initiatorId == myUserId) {
+            session.responderUsername
+        } else {
+            session.initiatorUsername
+        }
+
+    private suspend fun fetchInitiatorEphemeralKeyForSession(
+        sessionId: String,
+        peerUsername: String?,
+    ): ByteArray {
+        return try {
+            val ephemeralData = api.getEphemeralKey(sessionId)
+            E2EEService.fromBase64(ephemeralData.ephemeralPublicKey)
+        } catch (_: Exception) {
+            val peerLabel = peerUsername?.takeIf { it.isNotBlank() } ?: "this peer"
+            error("Session with $peerLabel must be recreated on this device")
+        }
+    }
+
+    private inline fun debugLog(message: () -> String) {
+        if (BuildConfig.DEBUG) {
+            Log.d(tag, message())
+        }
+    }
+
+    private fun warnLog(message: String, throwable: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
+        if (throwable != null) {
+            Log.w(tag, message, throwable)
+        } else {
+            Log.w(tag, message)
+        }
+    }
+
+    private fun errorLog(message: String, throwable: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
+        if (throwable != null) {
+            Log.e(tag, message, throwable)
+        } else {
+            Log.e(tag, message)
+        }
+    }
 }
 
 data class SendResult(
@@ -382,4 +613,9 @@ data class SendResult(
 data class SessionInfo(
     val sessionId: String,
     val peerUsername: String,
+    val reusedExisting: Boolean = false,
 )
+
+class DuplicateSessionConflictException(
+    val conflict: DuplicateSessionConflictResponse,
+) : IllegalStateException(conflict.detail)

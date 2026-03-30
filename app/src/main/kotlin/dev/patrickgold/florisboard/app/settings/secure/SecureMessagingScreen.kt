@@ -1,12 +1,10 @@
 package dev.patrickgold.florisboard.app.settings.secure
 
-import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -25,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -32,6 +31,8 @@ import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.florisboard.secure.data.remote.SessionResponse
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
+import dev.patrickgold.florisboard.secure.data.repository.DuplicateSessionConflictException
+import dev.patrickgold.florisboard.secure.data.repository.SecureMessagingRepository
 import dev.patrickgold.florisboard.secureMessagingManager
 import dev.patrickgold.jetpref.datastore.ui.PreferenceGroup
 import kotlinx.coroutines.Dispatchers
@@ -42,8 +43,12 @@ import org.florisboard.lib.compose.stringRes
 private data class ManagedSessionRow(
     val sessionId: String,
     val peerName: String,
-    val canSend: Boolean,
+    val peerUserId: String,
+    val isActive: Boolean,
+    val canSelect: Boolean,
+    val isRecreatable: Boolean,
     val statusText: String?,
+    val statusIsError: Boolean,
 )
 
 @Composable
@@ -56,9 +61,6 @@ fun SecureMessagingScreen() = FlorisScreen {
 
     content {
         val repo = secureManager.secureMessagingRepository
-        val prefs = remember(context) {
-            context.getSharedPreferences("secure_active_session", Context.MODE_PRIVATE)
-        }
 
         var isLoggedIn by remember { mutableStateOf(repo.isLoggedIn()) }
         var username by remember { mutableStateOf("") }
@@ -70,44 +72,61 @@ fun SecureMessagingScreen() = FlorisScreen {
         var sessions by remember { mutableStateOf(emptyList<ManagedSessionRow>()) }
         var isSearching by remember { mutableStateOf(false) }
         var isRefreshingSessions by remember { mutableStateOf(false) }
-        var activeSessionId by remember { mutableStateOf(prefs.getString("session_id", null)) }
-        var activeRecipientName by remember { mutableStateOf(prefs.getString("recipient_name", null)) }
+        var activeSessionId by remember { mutableStateOf(secureManager.getActiveSession()?.sessionId) }
+        var activeRecipientName by remember { mutableStateOf(secureManager.getActiveSession()?.recipientName) }
 
         fun setActiveSession(sessionId: String, peerName: String) {
-            prefs.edit()
-                .putString("session_id", sessionId)
-                .putString("recipient_name", peerName)
-                .apply()
+            secureManager.setActiveSession(sessionId, peerName)
             activeSessionId = sessionId
             activeRecipientName = peerName
         }
 
         fun clearActiveSession() {
-            prefs.edit().remove("session_id").remove("recipient_name").apply()
+            secureManager.clearActiveSession()
             activeSessionId = null
             activeRecipientName = null
         }
 
+        fun syncActiveSession(sessionRows: List<ManagedSessionRow> = sessions) {
+            val selection = secureManager.getActiveSession()
+
+            val validSelection = selection?.takeIf { selected ->
+                sessionRows.any { it.sessionId == selected.sessionId }
+            }
+
+            if (selection != null && validSelection == null) {
+                secureManager.clearActiveSession()
+            }
+
+            activeSessionId = validSelection?.sessionId
+            activeRecipientName = validSelection?.recipientName
+        }
+
         fun mapSessions(sessionList: List<SessionResponse>): List<ManagedSessionRow> {
             val myUserId = repo.getUserId()
-            return sessionList.filter { it.isActive }.map { session ->
+            return sessionList.map { session ->
                 val peerName = if (session.initiatorId == myUserId) {
                     session.responderUsername
                 } else {
                     session.initiatorUsername
                 }
-                val canSend = repo.canSendToSession(session)
+                val peerUserId = if (session.initiatorId == myUserId) {
+                    session.responderId
+                } else {
+                    session.initiatorId
+                }
+                val canSelect = repo.canSelectSession(session)
+                val isRecreatable = repo.requiresSessionRecreationForSend(session)
+                val statusText = repo.describeSessionStatus(session)
                 ManagedSessionRow(
                     sessionId = session.sessionId,
                     peerName = peerName,
-                    canSend = canSend,
-                    statusText = if (repo.requiresSessionRecreationForSend(session)) {
-                        "Recreate session on this device"
-                    } else if (!canSend) {
-                        "Send not ready on this device"
-                    } else {
-                        null
-                    },
+                    peerUserId = peerUserId,
+                    isActive = session.isActive,
+                    canSelect = canSelect,
+                    isRecreatable = isRecreatable,
+                    statusText = statusText,
+                    statusIsError = statusText != null && (!canSelect || session.isActive),
                 )
             }
         }
@@ -115,18 +134,63 @@ fun SecureMessagingScreen() = FlorisScreen {
         fun reloadSessions() {
             scope.launch {
                 isRefreshingSessions = true
-                val result = withContext(Dispatchers.IO) { repo.listSessions() }
+                val result = withContext(Dispatchers.IO) { repo.listSessions(activeOnly = false) }
                 isRefreshingSessions = false
                 result.onSuccess {
                     sessions = mapSessions(it)
+                    val activeSelection = secureManager.reconcileActiveSession(it)
+                    activeSessionId = activeSelection?.sessionId
+                    activeRecipientName = activeSelection?.recipientName
                 }.onFailure { e ->
                     statusMessage = "Failed to load sessions: ${e.message?.take(80)}"
                 }
             }
         }
 
+        fun createOrRecreateSession(peerName: String, peerUserId: String, oldSessionId: String? = null) {
+            isLoading = true
+            statusMessage = ""
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        if (oldSessionId != null) {
+                            repo.deactivateSession(oldSessionId).getOrThrow()
+                        }
+                        repo.createSession(peerName, peerUserId).getOrThrow()
+                    }
+                }
+                isLoading = false
+                result.onSuccess { sessionInfo ->
+                    setActiveSession(sessionInfo.sessionId, sessionInfo.peerUsername)
+                    statusMessage = if (sessionInfo.reusedExisting) {
+                        "Reusing existing session with ${sessionInfo.peerUsername}"
+                    } else if (oldSessionId == null) {
+                        "Session ready with ${sessionInfo.peerUsername}"
+                    } else {
+                        "Session recreated with ${sessionInfo.peerUsername}"
+                    }
+                    searchQuery = ""
+                    searchResults = emptyList()
+                    reloadSessions()
+                }.onFailure { e ->
+                    val message = when (e) {
+                        is DuplicateSessionConflictException -> e.conflict.detail
+                        else -> e.message?.take(120).orEmpty()
+                    }
+                    statusMessage = if (oldSessionId == null) {
+                        "Failed to start session: $message"
+                    } else {
+                        "Failed to recreate session: $message"
+                    }
+                }
+            }
+        }
+
         LaunchedEffect(isLoggedIn) {
             if (isLoggedIn) {
+                val activeSelection = secureManager.getActiveSession()
+                activeSessionId = activeSelection?.sessionId
+                activeRecipientName = activeSelection?.recipientName
                 reloadSessions()
             } else {
                 sessions = emptyList()
@@ -170,13 +234,41 @@ fun SecureMessagingScreen() = FlorisScreen {
                     }
                     OutlinedButton(
                         onClick = {
-                            repo.logout()
-                            isLoggedIn = false
+                            isLoading = true
                             statusMessage = ""
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { repo.logout() }
+                                isLoading = false
+                                isLoggedIn = false
+                                sessions = emptyList()
+                                searchResults = emptyList()
+                                activeSessionId = null
+                                activeRecipientName = null
+                                result.onSuccess {
+                                    statusMessage = "Logged out"
+                                }.onFailure { e ->
+                                    statusMessage = "Logged out locally: ${e.message?.take(80)}"
+                                }
+                            }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(stringRes(R.string.settings__secure_messaging__logout))
+                    }
+                    if (repo.isLocalSecureIdentityMissing()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                            ),
+                        ) {
+                            Text(
+                                text = SecureMessagingRepository.localSecureIdentityMissingMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
                     }
                 } else {
                     Text(
@@ -215,7 +307,11 @@ fun SecureMessagingScreen() = FlorisScreen {
                                     isLoading = false
                                     result.onSuccess {
                                         isLoggedIn = true
-                                        statusMessage = "Logged in successfully"
+                                        statusMessage = if (repo.isLocalSecureIdentityMissing()) {
+                                            SecureMessagingRepository.localSecureIdentityMissingMessage
+                                        } else {
+                                            "Logged in successfully"
+                                        }
                                         password = ""
                                     }.onFailure { e ->
                                         statusMessage = "Login failed: ${e.message?.take(80)}"
@@ -256,7 +352,9 @@ fun SecureMessagingScreen() = FlorisScreen {
                     val isError = statusMessage.startsWith("Login failed") ||
                         statusMessage.startsWith("Register failed") ||
                         statusMessage.startsWith("Failed") ||
-                        statusMessage.startsWith("Deactivate failed")
+                        statusMessage.startsWith("Deactivate failed") ||
+                        statusMessage.contains(SecureMessagingRepository.localSecureIdentityMissingMessage) ||
+                        statusMessage.contains(SecureMessagingRepository.historicalSessionKeyMissingMessage)
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
@@ -305,7 +403,7 @@ fun SecureMessagingScreen() = FlorisScreen {
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 Text(
-                                    text = "Active session",
+                                    text = "Selected session",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
                                 )
@@ -318,7 +416,7 @@ fun SecureMessagingScreen() = FlorisScreen {
                         }
                     } else {
                         Text(
-                            text = "No active session selected",
+                            text = "No session selected",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -329,7 +427,7 @@ fun SecureMessagingScreen() = FlorisScreen {
                         enabled = !activeRecipient.isNullOrBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Clear Active Session")
+                        Text("Clear Selected Session")
                     }
 
                     Row(
@@ -397,22 +495,7 @@ fun SecureMessagingScreen() = FlorisScreen {
                                         }
                                         Button(
                                             onClick = {
-                                                isLoading = true
-                                                scope.launch {
-                                                    val result = withContext(Dispatchers.IO) {
-                                                        repo.createSession(user.username, user.userId)
-                                                    }
-                                                    isLoading = false
-                                                    result.onSuccess { sessionInfo ->
-                                                        setActiveSession(sessionInfo.sessionId, sessionInfo.peerUsername)
-                                                        statusMessage = "Session ready with ${sessionInfo.peerUsername}"
-                                                        searchQuery = ""
-                                                        searchResults = emptyList()
-                                                        reloadSessions()
-                                                    }.onFailure { e ->
-                                                        statusMessage = "Failed to start session: ${e.message?.take(80)}"
-                                                    }
-                                                }
+                                                createOrRecreateSession(user.username, user.userId)
                                             },
                                             enabled = !isLoading,
                                         ) {
@@ -442,7 +525,9 @@ fun SecureMessagingScreen() = FlorisScreen {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             sessions.forEach { session ->
                                 Card(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .alpha(if (session.canSelect) 1f else 0.72f),
                                     colors = CardDefaults.cardColors(
                                         containerColor = if (session.sessionId == activeSessionId) {
                                             MaterialTheme.colorScheme.primaryContainer
@@ -462,7 +547,11 @@ fun SecureMessagingScreen() = FlorisScreen {
                                             Text(
                                                 text = session.statusText,
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.error,
+                                                color = if (session.statusIsError) {
+                                                    MaterialTheme.colorScheme.error
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary
+                                                },
                                             )
                                         }
                                         Row(
@@ -471,9 +560,31 @@ fun SecureMessagingScreen() = FlorisScreen {
                                         ) {
                                             Button(
                                                 onClick = { setActiveSession(session.sessionId, session.peerName) },
+                                                enabled = session.canSelect && !isLoading,
                                                 modifier = Modifier.weight(1f),
                                             ) {
-                                                Text(if (session.sessionId == activeSessionId) "Active" else "Set Active")
+                                                Text(
+                                                    when {
+                                                        session.sessionId == activeSessionId -> "Selected"
+                                                        session.isActive -> "Set Active"
+                                                        else -> "Select"
+                                                    },
+                                                )
+                                            }
+                                            if (session.isRecreatable && session.isActive) {
+                                                Button(
+                                                    onClick = {
+                                                        createOrRecreateSession(
+                                                            peerName = session.peerName,
+                                                            peerUserId = session.peerUserId,
+                                                            oldSessionId = session.sessionId,
+                                                        )
+                                                    },
+                                                    enabled = !isLoading,
+                                                    modifier = Modifier.weight(1f),
+                                                ) {
+                                                    Text("Recreate")
+                                                }
                                             }
                                             OutlinedButton(
                                                 onClick = {
@@ -484,9 +595,9 @@ fun SecureMessagingScreen() = FlorisScreen {
                                                         }
                                                         isLoading = false
                                                         result.onSuccess {
-                                                            if (session.sessionId == activeSessionId) {
-                                                                clearActiveSession()
-                                                            }
+                                                            syncActiveSession(
+                                                                sessions.filterNot { it.sessionId == session.sessionId },
+                                                            )
                                                             statusMessage = "Closed session with ${session.peerName}"
                                                             reloadSessions()
                                                         }.onFailure { e ->
