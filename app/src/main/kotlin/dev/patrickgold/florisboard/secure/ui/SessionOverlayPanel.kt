@@ -1,6 +1,5 @@
 package dev.patrickgold.florisboard.secure.ui
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -28,7 +27,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -38,17 +36,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.patrickgold.florisboard.keyboardManager
+import dev.patrickgold.florisboard.secure.core.ManagedSecureSession
+import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secureMessagingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
-data class SessionItem(
-    val sessionId: String,
-    val peerUsername: String,
-    val isActive: Boolean,
-    val canSend: Boolean,
-    val statusText: String? = null,
-)
 
 @Composable
 fun SessionOverlayPanel() {
@@ -57,50 +49,32 @@ fun SessionOverlayPanel() {
     val secureManager by context.secureMessagingManager()
 
     var isLoading by remember { mutableStateOf(true) }
-    val sessions = remember { mutableStateListOf<SessionItem>() }
+    var activeSession by remember { mutableStateOf<SecureSessionSelection?>(secureManager.getActiveSessionSelection()) }
+    var sessions by remember { mutableStateOf(emptyList<ManagedSecureSession>()) }
+
+    fun clearActiveSession() {
+        secureManager.clearActiveSession()
+        activeSession = null
+        sessions = sessions.map { it.copy(isActiveSelection = false) }
+    }
+
+    fun setActiveSession(selection: SecureSessionSelection) {
+        secureManager.setActiveSession(selection.sessionId, selection.recipientName)
+        activeSession = selection
+        sessions = sessions.map { it.copy(isActiveSelection = it.sessionId == selection.sessionId) }
+    }
 
     LaunchedEffect(Unit) {
         isLoading = true
-        withContext(Dispatchers.IO) {
-            try {
-                val repo = secureManager.secureMessagingRepository
-                val result = repo.listSessions()
-                val myUserId = repo.getUserId()
-                result.getOrNull()?.let { list ->
-                    val items = list.filter { it.isActive }.map { session ->
-                        val peer = if (session.initiatorId == myUserId) {
-                            session.responderUsername
-                        } else {
-                            session.initiatorUsername
-                        }
-                        val canSend = repo.canSendToSession(session)
-                        SessionItem(
-                            sessionId = session.sessionId,
-                            peerUsername = peer,
-                            isActive = session.isActive,
-                            canSend = canSend,
-                            statusText = if (repo.requiresSessionRecreationForSend(session)) {
-                                "Recreate session on this device"
-                            } else if (!canSend) {
-                                "Send not ready on this device"
-                            } else {
-                                null
-                            },
-                        )
-                    }
-                    sessions.clear()
-                    sessions.addAll(items)
-                }
-            } catch (_: Exception) {
-                sessions.clear()
-            }
-            isLoading = false
+        val result = withContext(Dispatchers.IO) { secureManager.listManagedSessions() }
+        result.onSuccess { managedSessions ->
+            sessions = managedSessions
+            activeSession = secureManager.getActiveSessionSelection()
+        }.onFailure {
+            sessions = emptyList()
         }
+        isLoading = false
     }
-
-    val prefs = context.getSharedPreferences("secure_active_session", Context.MODE_PRIVATE)
-    val activeSessionId = prefs.getString("session_id", null)
-    val activeRecipient = prefs.getString("recipient_name", null) ?: ""
 
     Column(
         modifier = Modifier
@@ -127,7 +101,7 @@ fun SessionOverlayPanel() {
             }
         }
 
-        if (activeRecipient.isNotEmpty()) {
+        if (!activeSession?.recipientName.isNullOrBlank()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -139,10 +113,17 @@ fun SessionOverlayPanel() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = activeRecipient,
+                    text = activeSession!!.recipientName,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                sessions.firstOrNull { it.sessionId == activeSession?.sessionId }?.recoveryHint?.let { recoveryHint ->
+                    Text(
+                        text = recoveryHint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
 
@@ -154,10 +135,10 @@ fun SessionOverlayPanel() {
         ) {
             Button(
                 onClick = {
-                    prefs.edit().remove("session_id").remove("recipient_name").apply()
+                    clearActiveSession()
                     keyboardManager.activeState.isSecureSessionVisible = false
                 },
-                enabled = activeRecipient.isNotEmpty(),
+                enabled = activeSession != null,
                 modifier = Modifier.weight(1f),
             ) {
                 Text("Clear Active")
@@ -199,19 +180,24 @@ fun SessionOverlayPanel() {
                     .weight(1f),
             ) {
                 items(sessions) { session ->
-                    val isSelected = session.sessionId == activeSessionId
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                prefs.edit()
-                                    .putString("session_id", session.sessionId)
-                                    .putString("recipient_name", session.peerUsername)
-                                    .apply()
+                                setActiveSession(
+                                    SecureSessionSelection(
+                                        sessionId = session.sessionId,
+                                        recipientName = session.peerUsername,
+                                    ),
+                                )
                                 keyboardManager.activeState.isSecureSessionVisible = false
                             }
                             .background(
-                                if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                if (session.isActiveSelection) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
                             )
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -220,25 +206,34 @@ fun SessionOverlayPanel() {
                             Icons.Default.Person,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp),
-                            tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (session.isActiveSelection) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = session.peerUsername,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = if (session.canSend) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (session.canSend) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                             )
-                            if (session.statusText != null) {
+                            val recoveryHint = session.recoveryHint
+                            if (!recoveryHint.isNullOrBlank()) {
                                 Text(
-                                    text = session.statusText,
+                                    text = recoveryHint,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error,
                                 )
                             }
                         }
-                        if (isSelected) {
-                            Text(text = "✓", color = MaterialTheme.colorScheme.primary)
+                        if (session.isActiveSelection) {
+                            Text(text = "Active", color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }

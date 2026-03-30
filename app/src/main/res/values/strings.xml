@@ -1169,6 +1169,7 @@
     <string name="secure__login_required">Please log in first</string>
     <string name="secure__no_session">No active session — select a session first</string>
     <string name="secure__no_text_field">No text field available</string>
+    <string name="secure__select_text_to_encrypt">Select text to encrypt first</string>
     <string name="secure__type_message_hint">Type a message first</string>
     <string name="secure__encrypting">Encrypting…</string>
     <string name="secure__encrypted_done">Encrypted!</string>

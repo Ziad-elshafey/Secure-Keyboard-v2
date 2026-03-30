@@ -1,6 +1,6 @@
 package dev.patrickgold.florisboard.secure.data.repository
 
-import android.util.Log
+import dev.patrickgold.florisboard.secure.core.StegoProviderType
 import dev.patrickgold.florisboard.secure.core.e2ee.E2EEService
 import dev.patrickgold.florisboard.secure.data.local.AuthTokenManager
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
@@ -19,6 +19,7 @@ import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeRequest
 import dev.patrickgold.florisboard.secure.data.remote.UploadKeysRequest
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
 import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
+import android.util.Log
 
 class SecureMessagingRepository(
     private val api: SecureApiService,
@@ -196,37 +197,41 @@ class SecureMessagingRepository(
             "sendMessage: raw=${plaintext.toByteArray().size}B, payload=${payload.size}B (flag=0x%02X), cipher=${ciphertext.size}B, packed=${packed.size}B, counter=$counter".format(payload[0]),
         )
 
-        val obfuscatedText = try {
-            stegoEncodeApi.encode(
-                StegoEncodeRequest(
-                    context = buildStegoContext(),
-                    bits = packedBits,
-                ),
-            ).text
-        } catch (e: Exception) {
-            Log.w(tag, "Modal stego encode failed (${e.message}) - falling back to server obfuscation")
-            api.obfuscate(
-                ObfuscateRequest(
-                    ciphertextB64 = E2EEService.toBase64(packed),
-                    peerUsername = peerUsername,
-                ),
-            ).obfuscatedText
-        }
-
-        SendResult(obfuscatedText = obfuscatedText)
+        runCatching {
+            obfuscateWithServer(packed, peerUsername)
+        }.fold(
+            onSuccess = { sendResult ->
+                Log.d(
+                    tag,
+                    "sendMessage: obfuscated through server provider=${sendResult.providerType} fallback=${sendResult.usedFallback}",
+                )
+                sendResult
+            },
+            onFailure = { e ->
+                Log.w(tag, "Server obfuscation failed (${e.message}) - falling back to Modal encode")
+                obfuscateWithModal(packedBits)
+            },
+        )
     }
 
-    suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<String> = runCatching {
+    suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<DecryptResult> = runCatching {
         Log.d(tag, "decryptMessage: sender=$senderUsername")
 
-        val packed: ByteArray = try {
-            bitStringToByteArray(stegoDecodeApi.decode(StegoDecodeRequest(text = obfuscatedText)).bits)
-        } catch (e: Exception) {
-            Log.w(tag, "Modal stego decode failed (${e.message}) - falling back to server deobfuscation")
-            E2EEService.fromBase64(
-                api.deobfuscate(DeobfuscateRequest(obfuscatedText, senderUsername)).ciphertextB64,
-            )
-        }
+        val decoded = runCatching {
+            deobfuscateWithServer(obfuscatedText, senderUsername)
+        }.fold(
+            onSuccess = { decryptResult ->
+                Log.d(
+                    tag,
+                    "decryptMessage: deobfuscated through server provider=${decryptResult.providerType} fallback=${decryptResult.usedFallback}",
+                )
+                decryptResult
+            },
+            onFailure = { e ->
+                Log.w(tag, "Server deobfuscation failed (${e.message}) - falling back to Modal decode")
+                deobfuscateWithModal(obfuscatedText)
+            },
+        )
 
         val sessions = api.listSessions(activeOnly = true)
         val session = sessions.firstOrNull { s ->
@@ -234,13 +239,17 @@ class SecureMessagingRepository(
         } ?: error("No active session found with $senderUsername")
 
         val sharedSecret = getOrEstablishSharedSecretForReceive(session.sessionId)
-        val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(packed)
-        Log.d(tag, "decryptMessage: packed=${packed.size}B ciphertext=${ciphertext.size}B counter=$counter")
+        val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(decoded.packedCiphertext)
+        Log.d(tag, "decryptMessage: packed=${decoded.packedCiphertext.size}B ciphertext=${ciphertext.size}B counter=$counter")
 
         val payload = E2EEService.chacha20Decrypt(ciphertext, sharedSecret, counter)
         val plaintext = parsePayload(payload)
         Log.d(tag, "decryptMessage: success plaintext=${plaintext.take(50)}...")
-        plaintext
+        DecryptResult(
+            plaintext = plaintext,
+            providerType = decoded.providerType,
+            usedFallback = decoded.usedFallback,
+        )
     }.onFailure { e ->
         Log.e(tag, "decryptMessage: failed", e)
     }
@@ -373,10 +382,89 @@ class SecureMessagingRepository(
     }
 
     private fun buildStegoContext(): String = defaultStegoContext
+
+    private suspend fun obfuscateWithServer(
+        packedCiphertext: ByteArray,
+        peerUsername: String,
+    ): SendResult {
+        val response = api.obfuscate(
+            ObfuscateRequest(
+                ciphertextB64 = E2EEService.toBase64(packedCiphertext),
+                peerUsername = peerUsername,
+            ),
+        )
+        return SendResult(
+            obfuscatedText = response.obfuscatedText,
+            providerType = response.provider.toStegoProviderType(),
+            usedFallback = response.fallbackUsed,
+        )
+    }
+
+    private suspend fun obfuscateWithModal(packedBits: String): SendResult {
+        val obfuscatedText = stegoEncodeApi.encode(
+            StegoEncodeRequest(
+                context = buildStegoContext(),
+                bits = packedBits,
+            ),
+        ).text
+        return SendResult(
+            obfuscatedText = obfuscatedText,
+            providerType = StegoProviderType.MODAL,
+            usedFallback = true,
+        )
+    }
+
+    private suspend fun deobfuscateWithServer(
+        obfuscatedText: String,
+        senderUsername: String,
+    ): PackedDecryptResult {
+        val response = api.deobfuscate(DeobfuscateRequest(obfuscatedText, senderUsername))
+        val packedCiphertext = E2EEService.fromBase64(response.ciphertextB64)
+        require(packedCiphertext.size >= 3) {
+            "Server returned incomplete packed ciphertext (${packedCiphertext.size} bytes)"
+        }
+        return PackedDecryptResult(
+            packedCiphertext = packedCiphertext,
+            providerType = response.provider.toStegoProviderType(),
+            usedFallback = response.fallbackUsed,
+        )
+    }
+
+    private suspend fun deobfuscateWithModal(obfuscatedText: String): PackedDecryptResult {
+        return PackedDecryptResult(
+            packedCiphertext = bitStringToByteArray(
+                stegoDecodeApi.decode(StegoDecodeRequest(text = obfuscatedText)).bits,
+            ),
+            providerType = StegoProviderType.MODAL,
+            usedFallback = true,
+        )
+    }
+
+    private fun String?.toStegoProviderType(): StegoProviderType {
+        return if (this?.contains("modal", ignoreCase = true) == true) {
+            StegoProviderType.MODAL
+        } else {
+            StegoProviderType.SERVER
+        }
+    }
 }
 
 data class SendResult(
     val obfuscatedText: String,
+    val providerType: StegoProviderType,
+    val usedFallback: Boolean,
+)
+
+data class DecryptResult(
+    val plaintext: String,
+    val providerType: StegoProviderType,
+    val usedFallback: Boolean,
+)
+
+private data class PackedDecryptResult(
+    val packedCiphertext: ByteArray,
+    val providerType: StegoProviderType,
+    val usedFallback: Boolean,
 )
 
 data class SessionInfo(

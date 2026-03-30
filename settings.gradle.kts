@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+val repoLocalKotlinDir = file(".kotlin").absoluteFile
+repoLocalKotlinDir.resolve("sessions").mkdirs()
+System.setProperty("kotlin.project.persistent.dir", repoLocalKotlinDir.invariantSeparatorsPath)
+
 rootProject.name = "FlorisBoard"
 
 pluginManagement {

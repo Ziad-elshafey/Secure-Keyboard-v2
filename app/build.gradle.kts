@@ -15,8 +15,10 @@
  */
 
 import com.android.build.api.dsl.ApplicationExtension
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.Project
 
 plugins {
     alias(libs.plugins.agp.application)
@@ -40,6 +42,9 @@ val projectVersionNameSuffix = projectVersionName.substringAfter("-", "").let { 
         suffix
     }
 }
+rootProject.file(".kotlin/sessions").mkdirs()
+projectDir.resolve(".kotlin/sessions").mkdirs()
+File(System.getProperty("user.home"), ".kotlin/sessions").mkdirs()
 
 kotlin {
     compilerOptions {
@@ -78,6 +83,7 @@ configure<ApplicationExtension> {
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
+        manifestPlaceholders["secureUsesCleartextTraffic"] = "false"
 
         sourceSets {
             maybeCreate("main").apply {
@@ -107,6 +113,10 @@ configure<ApplicationExtension> {
 
             isDebuggable = true
             isJniDebuggable = false
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "http://10.0.2.2:8000/")))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
+            manifestPlaceholders["secureUsesCleartextTraffic"] = "true"
         }
 
         create("beta") {
@@ -116,6 +126,9 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
         }
 
         named("release") {
@@ -124,6 +137,9 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
         }
 
         create("benchmark") {
@@ -134,6 +150,9 @@ configure<ApplicationExtension> {
 
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode.modal.run/", requireHttps = true)))
         }
     }
 
@@ -250,3 +269,37 @@ fun getGitCommitHash(short: Boolean = false): Provider<String> {
     }
     return execProvider.standardOutput.asText.map { it.trim() }
 }
+
+fun Project.resolveSecureEndpoint(
+    propertyName: String,
+    envName: String,
+    fallbackValue: String? = null,
+    requireHttps: Boolean = false,
+    disallowPlaceholder: Boolean = false,
+): String {
+    val configuredValue = providers.gradleProperty(propertyName)
+        .orElse(providers.environmentVariable(envName))
+        .orNull
+    val value = configuredValue ?: fallbackValue
+        ?: throw GradleException("Missing required secure endpoint '$envName' (or Gradle property '$propertyName').")
+    val shouldEnforcePlaceholderCheck = gradle.startParameter.taskNames.any { taskName ->
+        taskName.contains("release", ignoreCase = true) ||
+            taskName.contains("beta", ignoreCase = true) ||
+            taskName.contains("benchmark", ignoreCase = true)
+    }
+
+    if (requireHttps && !value.startsWith("https://")) {
+        throw GradleException("Secure endpoint '$envName' must use HTTPS: $value")
+    }
+    if (
+        disallowPlaceholder &&
+        shouldEnforcePlaceholderCheck &&
+        (configuredValue == null || value.contains("example.com") || value.contains(".invalid"))
+    ) {
+        throw GradleException("Secure endpoint '$envName' must be configured for this environment.")
+    }
+
+    return value
+}
+
+fun quoted(value: String): String = "\"$value\""

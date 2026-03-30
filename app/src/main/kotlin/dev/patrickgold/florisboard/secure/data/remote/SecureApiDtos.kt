@@ -107,6 +107,10 @@ data class ObfuscateRequest(
 
 data class ObfuscateResponse(
     @SerializedName("obfuscated_text") val obfuscatedText: String,
+    @SerializedName("provider") val provider: String? = null,
+    @SerializedName("fallback_used") val fallbackUsed: Boolean = false,
+    @SerializedName("fallback_reason") val fallbackReason: String? = null,
+    @SerializedName("obfuscation_version") val obfuscationVersion: String? = null,
 )
 
 data class DeobfuscateRequest(
@@ -116,6 +120,10 @@ data class DeobfuscateRequest(
 
 data class DeobfuscateResponse(
     @SerializedName("ciphertext_b64") val ciphertextB64: String,
+    @SerializedName("provider") val provider: String? = null,
+    @SerializedName("fallback_used") val fallbackUsed: Boolean = false,
+    @SerializedName("fallback_reason") val fallbackReason: String? = null,
+    @SerializedName("obfuscation_version") val obfuscationVersion: String? = null,
 )
 
 data class EphemeralKeyResponse(

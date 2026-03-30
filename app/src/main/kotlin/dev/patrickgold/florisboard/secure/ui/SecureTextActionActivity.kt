@@ -10,33 +10,23 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.secure.SecureMessagingManager
-import dev.patrickgold.florisboard.secure.data.remote.SessionResponse
+import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secureMessagingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Dialog-style Activity that appears in Android's text selection floating toolbar.
- *
- * Registered with PROCESS_TEXT intent filter so "Encrypt" and "Decrypt"
- * appear when user selects text in any app.
- */
 class SecureTextActionActivity : ComponentActivity() {
-
     private val secureManager: SecureMessagingManager by lazy { secureMessagingManager().value }
-    private val repo get() = secureManager.secureMessagingRepository
 
     private var isEncryptMode = true
     private var selectedText = ""
     private var isReadOnly = false
 
-    // UI references
     private lateinit var tvTitle: TextView
     private lateinit var tvStatus: TextView
     private lateinit var tvSelectedText: TextView
@@ -49,37 +39,24 @@ class SecureTextActionActivity : ComponentActivity() {
 
         selectedText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString() ?: ""
         isReadOnly = intent.getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false)
+        isEncryptMode = !componentName.className.contains("Decrypt", ignoreCase = true)
 
-        val componentName = componentName.className
-        isEncryptMode = !componentName.contains("Decrypt", ignoreCase = true)
+        buildUi()
 
-        buildUI()
-
-        // Silent encrypt if active session exists
-        if (isEncryptMode && selectedText.isNotEmpty()) {
-            val prefs = getSharedPreferences("secure_active_session", MODE_PRIVATE)
-            val savedSessionId = prefs.getString("session_id", null)
-            val savedRecipient = prefs.getString("recipient_name", null)
-            if (!savedSessionId.isNullOrEmpty() && !savedRecipient.isNullOrEmpty()) {
-                doSilentEncrypt(savedSessionId, savedRecipient)
-                return
+        val activeSession = secureManager.getActiveSessionSelection()
+        if (selectedText.isNotEmpty() && activeSession != null) {
+            if (isEncryptMode) {
+                doSilentEncrypt(activeSession)
+            } else {
+                doSilentDecrypt(activeSession)
             }
+            return
         }
 
-        // Silent decrypt if active session exists
-        if (!isEncryptMode && selectedText.isNotEmpty()) {
-            val prefs = getSharedPreferences("secure_active_session", MODE_PRIVATE)
-            val savedRecipient = prefs.getString("recipient_name", null)
-            if (!savedRecipient.isNullOrEmpty()) {
-                doSilentDecrypt(savedRecipient)
-                return
-            }
-        }
-
-        setupUI()
+        setupUi()
     }
 
-    private fun buildUI() {
+    private fun buildUi() {
         val padding = (16 * resources.displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
@@ -131,96 +108,16 @@ class SecureTextActionActivity : ComponentActivity() {
         setContentView(root)
     }
 
-    private fun doSilentEncrypt(sessionId: String, recipientUsername: String) {
-        tvSelectedText.visibility = View.GONE
-        etUsername.visibility = View.GONE
-        btnAction.visibility = View.GONE
-        btnCancel.visibility = View.GONE
-        tvTitle.text = getString(R.string.secure__encrypting)
-        tvStatus.text = "Encrypting for $recipientUsername..."
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val validationError = validateSessionForSend(sessionId)
-            if (validationError != null) {
-                withContext(Dispatchers.Main) {
-                    tvStatus.text = validationError
-                    btnCancel.visibility = View.VISIBLE
-                    btnCancel.setOnClickListener { finish() }
-                }
-                return@launch
-            }
-
-            val result = repo.sendMessage(sessionId, recipientUsername, selectedText)
-            withContext(Dispatchers.Main) {
-                result.onSuccess { sendResult ->
-                    if (!isReadOnly) {
-                        val resultIntent = Intent().apply {
-                            putExtra(Intent.EXTRA_PROCESS_TEXT, sendResult.obfuscatedText)
-                        }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
-                    } else {
-                        tvStatus.text = getString(R.string.secure__encrypted_done)
-                        copyToClipboard(sendResult.obfuscatedText)
-                        btnCancel.visibility = View.VISIBLE
-                        btnCancel.text = "Done"
-                        btnCancel.setOnClickListener { finish() }
-                    }
-                }.onFailure { e ->
-                    tvStatus.text = "Failed: ${simplifyError(e)}"
-                    btnCancel.visibility = View.VISIBLE
-                    btnCancel.setOnClickListener { finish() }
-                }
-            }
-        }
-    }
-
-    private fun doSilentDecrypt(senderUsername: String) {
-        tvSelectedText.visibility = View.GONE
-        etUsername.visibility = View.GONE
-        btnAction.visibility = View.GONE
-        btnCancel.visibility = View.GONE
-        tvTitle.text = "Decrypting..."
-        tvStatus.text = "Decrypting from $senderUsername..."
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val result = repo.decryptMessage(selectedText, senderUsername)
-            withContext(Dispatchers.Main) {
-                result.onSuccess { plaintext ->
-                    if (!isReadOnly) {
-                        val resultIntent = Intent().apply {
-                            putExtra(Intent.EXTRA_PROCESS_TEXT, plaintext)
-                        }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
-                    } else {
-                        tvStatus.text = "Decrypted! Copied to clipboard."
-                        copyToClipboard(plaintext)
-                        btnCancel.visibility = View.VISIBLE
-                        btnCancel.text = "Done"
-                        btnCancel.setOnClickListener { finish() }
-                    }
-                }.onFailure { e ->
-                    tvStatus.text = simplifyError(e)
-                    btnCancel.visibility = View.VISIBLE
-                    btnCancel.text = "Close"
-                    btnCancel.setOnClickListener { finish() }
-                }
-            }
-        }
-    }
-
-    private fun setupUI() {
-        if (!repo.isLoggedIn()) {
+    private fun setupUi() {
+        if (!secureManager.isLoggedIn()) {
             tvTitle.text = "Not Logged In"
-            tvSelectedText.text = "Open the app settings to log in first."
+            tvSelectedText.text = getString(R.string.secure__login_required)
             etUsername.visibility = View.GONE
             btnAction.visibility = View.GONE
             return
         }
 
         tvSelectedText.text = selectedText
-
         if (isEncryptMode) {
             tvTitle.text = "Encrypt"
             etUsername.hint = "Recipient's username"
@@ -240,7 +137,11 @@ class SecureTextActionActivity : ComponentActivity() {
         }
 
         btnAction.isEnabled = false
-        tvStatus.text = if (isEncryptMode) "Encrypting..." else "Decrypting..."
+        tvStatus.text = if (isEncryptMode) {
+            getString(R.string.secure__encrypting)
+        } else {
+            "Decrypting..."
+        }
 
         if (isEncryptMode) {
             doEncrypt(username)
@@ -249,43 +150,43 @@ class SecureTextActionActivity : ComponentActivity() {
         }
     }
 
+    private fun doSilentEncrypt(activeSession: SecureSessionSelection) {
+        showBusyState("Encrypting for ${activeSession.recipientName}...")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = secureManager.encryptForSession(activeSession, selectedText)
+            withContext(Dispatchers.Main) {
+                result.onSuccess { sendResult ->
+                    deliverResult(sendResult.obfuscatedText, copiedMessage = getString(R.string.secure__encrypted_done))
+                }.onFailure { e ->
+                    showFailure(secureManager.formatFailure("Encrypt failed", e))
+                }
+            }
+        }
+    }
+
+    private fun doSilentDecrypt(activeSession: SecureSessionSelection) {
+        showBusyState("Decrypting from ${activeSession.recipientName}...")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = secureManager.decryptForSender(selectedText, activeSession.recipientName)
+            withContext(Dispatchers.Main) {
+                result.onSuccess { decryptResult ->
+                    deliverResult(decryptResult.plaintext, copiedMessage = "Decrypted and copied to clipboard.")
+                }.onFailure { e ->
+                    showFailure(secureManager.formatFailure("Decrypt failed", e))
+                }
+            }
+        }
+    }
+
     private fun doEncrypt(recipientUsername: String) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val session = findSessionForPeer(recipientUsername)
-            if (session == null) {
-                withContext(Dispatchers.Main) {
-                    btnAction.isEnabled = true
-                    tvStatus.text = "No active session with '$recipientUsername'"
-                }
-                return@launch
-            }
-
-            val validationError = validateSessionForSend(session.sessionId, session)
-            if (validationError != null) {
-                withContext(Dispatchers.Main) {
-                    btnAction.isEnabled = true
-                    tvStatus.text = validationError
-                }
-                return@launch
-            }
-
-            val result = repo.sendMessage(session.sessionId, recipientUsername, selectedText)
-
+            val result = secureManager.encryptForPeer(recipientUsername, selectedText)
             withContext(Dispatchers.Main) {
                 btnAction.isEnabled = true
                 result.onSuccess { sendResult ->
-                    if (!isReadOnly) {
-                        val resultIntent = Intent().apply {
-                            putExtra(Intent.EXTRA_PROCESS_TEXT, sendResult.obfuscatedText)
-                        }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
-                    } else {
-                        tvStatus.text = "Encrypted! (copied to clipboard)"
-                        copyToClipboard(sendResult.obfuscatedText)
-                    }
+                    deliverResult(sendResult.obfuscatedText, copiedMessage = getString(R.string.secure__encrypted_done))
                 }.onFailure { e ->
-                    tvStatus.text = simplifyError(e)
+                    tvStatus.text = secureManager.formatFailure("Encrypt failed", e)
                 }
             }
         }
@@ -293,78 +194,66 @@ class SecureTextActionActivity : ComponentActivity() {
 
     private fun doDecrypt(senderUsername: String) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val result = repo.decryptMessage(selectedText, senderUsername)
+            val result = secureManager.decryptForSender(selectedText, senderUsername)
             withContext(Dispatchers.Main) {
                 btnAction.isEnabled = true
-                result.onSuccess { plaintext ->
-                    tvStatus.text = "Decrypted successfully"
-                    tvSelectedText.text = plaintext
+                result.onSuccess { decryptResult ->
+                    if (!isReadOnly) {
+                        setResult(
+                            RESULT_OK,
+                            Intent().apply {
+                                putExtra(Intent.EXTRA_PROCESS_TEXT, decryptResult.plaintext)
+                            },
+                        )
+                        finish()
+                    } else {
+                        tvStatus.text = "Decrypted and copied to clipboard."
+                        copyToClipboard(decryptResult.plaintext)
+                    }
                 }.onFailure { e ->
-                    tvStatus.text = simplifyError(e)
+                    tvStatus.text = secureManager.formatFailure("Decrypt failed", e)
                 }
             }
         }
     }
 
-    private suspend fun findSessionForPeer(peerUsername: String): SessionResponse? {
-        val sessions = repo.listSessions().getOrNull() ?: return null
-        val myUserId = repo.getUserId()
-
-        return sessions.filter { it.isActive }.firstOrNull { session ->
-            val peer = if (session.initiatorId == myUserId) {
-                session.responderUsername
-            } else {
-                session.initiatorUsername
-            }
-            peer.equals(peerUsername, ignoreCase = true)
-        }
+    private fun showBusyState(status: String) {
+        tvSelectedText.visibility = View.GONE
+        etUsername.visibility = View.GONE
+        btnAction.visibility = View.GONE
+        btnCancel.visibility = View.GONE
+        tvTitle.text = if (isEncryptMode) getString(R.string.secure__encrypting) else "Decrypting..."
+        tvStatus.text = status
     }
 
-    private suspend fun validateSessionForSend(
-        sessionId: String,
-        session: SessionResponse? = null,
-    ): String? {
-        val resolvedSession = session ?: repo.listSessions().getOrNull()?.firstOrNull {
-            it.sessionId == sessionId && it.isActive
+    private fun showFailure(message: String) {
+        tvStatus.text = message
+        btnCancel.visibility = View.VISIBLE
+        btnCancel.text = "Done"
+        btnCancel.setOnClickListener { finish() }
+    }
+
+    private fun deliverResult(text: String, copiedMessage: String) {
+        if (!isReadOnly) {
+            setResult(
+                RESULT_OK,
+                Intent().apply {
+                    putExtra(Intent.EXTRA_PROCESS_TEXT, text)
+                },
+            )
+            finish()
+            return
         }
 
-        if (resolvedSession == null) {
-            return "Active session not found"
-        }
-
-        if (repo.canSendToSession(resolvedSession)) {
-            return null
-        }
-
-        return if (repo.requiresSessionRecreationForSend(resolvedSession)) {
-            "Session must be recreated on this device"
-        } else {
-            "Session is not ready to send from this device"
-        }
+        tvStatus.text = copiedMessage
+        copyToClipboard(text)
+        btnCancel.visibility = View.VISIBLE
+        btnCancel.text = "Done"
+        btnCancel.setOnClickListener { finish() }
     }
 
     private fun copyToClipboard(text: String) {
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Encrypted", text))
-    }
-
-    private fun simplifyError(e: Throwable): String {
-        val msg = e.message ?: "Unknown error"
-        return when {
-            msg.contains("ConnectException") || msg.contains("Failed to connect") ->
-                "Cannot connect to server"
-            msg.contains("Recreate the session", ignoreCase = true) ||
-                msg.contains("created on another install", ignoreCase = true) ->
-                "Session must be recreated on this device"
-            msg.contains("not ready to send", ignoreCase = true) ->
-                "Session is not ready to send from this device"
-            msg.contains("Secure keys unavailable", ignoreCase = true) ->
-                "Local secure keys are missing - log in again"
-            msg.contains("No shared secret") ->
-                "No encryption keys — start a conversation first"
-            msg.contains("session") && msg.contains("not found", ignoreCase = true) ->
-                "No session with this user"
-            else -> msg.take(120)
-        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Secure Text", text))
     }
 }
