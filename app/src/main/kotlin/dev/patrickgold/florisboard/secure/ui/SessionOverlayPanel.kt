@@ -18,12 +18,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,9 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.keyboardManager
-import dev.patrickgold.florisboard.secure.core.ManagedSecureSession
-import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
+import dev.patrickgold.florisboard.secure.core.ActiveSecureContact
+import dev.patrickgold.florisboard.secure.core.SecureContact
 import dev.patrickgold.florisboard.secureMessagingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,29 +50,27 @@ fun SessionOverlayPanel() {
     val secureManager by context.secureMessagingManager()
 
     var isLoading by remember { mutableStateOf(true) }
-    var activeSession by remember { mutableStateOf<SecureSessionSelection?>(secureManager.getActiveSessionSelection()) }
-    var sessions by remember { mutableStateOf(emptyList<ManagedSecureSession>()) }
+    var activeContact by remember { mutableStateOf<ActiveSecureContact?>(secureManager.getActiveContactSelection()) }
+    var contacts by remember { mutableStateOf(emptyList<SecureContact>()) }
 
-    fun clearActiveSession() {
-        secureManager.clearActiveSession()
-        activeSession = null
-        sessions = sessions.map { it.copy(isActiveSelection = false) }
-    }
-
-    fun setActiveSession(selection: SecureSessionSelection) {
-        secureManager.setActiveSession(selection.sessionId, selection.recipientName)
-        activeSession = selection
-        sessions = sessions.map { it.copy(isActiveSelection = it.sessionId == selection.sessionId) }
+    fun setActiveContact(contact: SecureContact) {
+        val active = ActiveSecureContact(
+            userId = contact.userId,
+            username = contact.username,
+            displayName = contact.displayName,
+        )
+        secureManager.setActiveContact(active)
+        activeContact = active
     }
 
     LaunchedEffect(Unit) {
         isLoading = true
-        val result = withContext(Dispatchers.IO) { secureManager.listManagedSessions() }
-        result.onSuccess { managedSessions ->
-            sessions = managedSessions
-            activeSession = secureManager.getActiveSessionSelection()
+        val result = withContext(Dispatchers.IO) { secureManager.listContacts() }
+        result.onSuccess { savedContacts ->
+            contacts = savedContacts
+            activeContact = secureManager.getActiveContactSelection()
         }.onFailure {
-            sessions = emptyList()
+            contacts = emptyList()
         }
         isLoading = false
     }
@@ -79,79 +78,39 @@ fun SessionOverlayPanel() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(220.dp)
+            .height(240.dp)
             .background(MaterialTheme.colorScheme.surface),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Secure Sessions",
+                text = context.getString(R.string.secure__contacts_title),
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.weight(1f),
             )
             IconButton(
                 onClick = { keyboardManager.activeState.isSecureSessionVisible = false },
-                modifier = Modifier.size(32.dp),
+                modifier = Modifier.size(28.dp),
             ) {
-                Icon(Icons.Default.Close, contentDescription = "Close")
-            }
-        }
-
-        if (!activeSession?.recipientName.isNullOrBlank()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-            ) {
-                Text(
-                    text = "Active session",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close secure contacts panel",
+                    modifier = Modifier.size(16.dp),
                 )
-                Text(
-                    text = activeSession!!.recipientName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                sessions.firstOrNull { it.sessionId == activeSession?.sessionId }?.recoveryHint?.let { recoveryHint ->
-                    Text(
-                        text = recoveryHint,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
             }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = {
-                    clearActiveSession()
-                    keyboardManager.activeState.isSecureSessionVisible = false
-                },
-                enabled = activeSession != null,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Clear Active")
-            }
-            Button(
+            TextButton(
                 onClick = {
                     val intent = Intent(Intent.ACTION_VIEW).apply {
                         data = Uri.parse("ui://florisboard/settings/secure-messaging")
+                        addCategory(Intent.CATEGORY_BROWSABLE)
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
                     context.startActivity(intent)
                 },
-                modifier = Modifier.weight(1f),
             ) {
                 Text("Manage")
             }
@@ -161,14 +120,14 @@ fun SessionOverlayPanel() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(12.dp),
                 horizontalArrangement = Arrangement.Center,
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp))
             }
-        } else if (sessions.isEmpty()) {
+        } else if (contacts.isEmpty()) {
             Text(
-                text = "No active sessions",
+                text = context.getString(R.string.secure__no_contacts),
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -179,34 +138,29 @@ fun SessionOverlayPanel() {
                     .fillMaxWidth()
                     .weight(1f),
             ) {
-                items(sessions) { session ->
+                items(contacts) { contact ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                setActiveSession(
-                                    SecureSessionSelection(
-                                        sessionId = session.sessionId,
-                                        recipientName = session.peerUsername,
-                                    ),
-                                )
+                                setActiveContact(contact)
                                 keyboardManager.activeState.isSecureSessionVisible = false
                             }
                             .background(
-                                if (session.isActiveSelection) {
+                                if (activeContact?.username.equals(contact.username, ignoreCase = true)) {
                                     MaterialTheme.colorScheme.primaryContainer
                                 } else {
                                     Color.Transparent
                                 },
                             )
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             Icons.Default.Person,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp),
-                            tint = if (session.isActiveSelection) {
+                            tint = if (activeContact?.username.equals(contact.username, ignoreCase = true)) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -215,25 +169,25 @@ fun SessionOverlayPanel() {
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = session.peerUsername,
+                                text = contact.username,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = if (session.canSend) {
-                                    MaterialTheme.colorScheme.onSurface
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
-                            val recoveryHint = session.recoveryHint
-                            if (!recoveryHint.isNullOrBlank()) {
+                            if (!contact.displayName.isNullOrBlank() &&
+                                !contact.displayName.equals(contact.username, ignoreCase = true)
+                            ) {
                                 Text(
-                                    text = recoveryHint,
+                                    text = contact.displayName.orEmpty(),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
-                        if (session.isActiveSelection) {
-                            Text(text = "Active", color = MaterialTheme.colorScheme.primary)
+                        if (activeContact?.username.equals(contact.username, ignoreCase = true)) {
+                            Text(
+                                text = context.getString(R.string.secure__active_status),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                 }

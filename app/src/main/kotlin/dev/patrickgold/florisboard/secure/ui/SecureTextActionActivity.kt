@@ -14,7 +14,6 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.secure.SecureMessagingManager
-import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secureMessagingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -43,12 +42,12 @@ class SecureTextActionActivity : ComponentActivity() {
 
         buildUi()
 
-        val activeSession = secureManager.getActiveSessionSelection()
-        if (selectedText.isNotEmpty() && activeSession != null) {
+        val activeContact = secureManager.getActiveContactSelection()
+        if (selectedText.isNotEmpty() && activeContact != null) {
             if (isEncryptMode) {
-                doSilentEncrypt(activeSession)
+                doSilentEncrypt()
             } else {
-                doSilentDecrypt(activeSession)
+                doSilentDecrypt()
             }
             return
         }
@@ -150,10 +149,10 @@ class SecureTextActionActivity : ComponentActivity() {
         }
     }
 
-    private fun doSilentEncrypt(activeSession: SecureSessionSelection) {
-        showBusyState("Encrypting for ${activeSession.recipientName}...")
+    private fun doSilentEncrypt() {
+        showBusyState(getString(R.string.secure__encrypting))
         lifecycleScope.launch(Dispatchers.IO) {
-            val result = secureManager.encryptForSession(activeSession, selectedText)
+            val result = secureManager.encryptWithActiveSession(selectedText)
             withContext(Dispatchers.Main) {
                 result.onSuccess { sendResult ->
                     deliverResult(sendResult.obfuscatedText, copiedMessage = getString(R.string.secure__encrypted_done))
@@ -164,10 +163,10 @@ class SecureTextActionActivity : ComponentActivity() {
         }
     }
 
-    private fun doSilentDecrypt(activeSession: SecureSessionSelection) {
-        showBusyState("Decrypting from ${activeSession.recipientName}...")
+    private fun doSilentDecrypt() {
+        showBusyState("Decrypting...")
         lifecycleScope.launch(Dispatchers.IO) {
-            val result = secureManager.decryptForSender(selectedText, activeSession.recipientName)
+            val result = secureManager.decryptWithActiveSession(selectedText)
             withContext(Dispatchers.Main) {
                 result.onSuccess { decryptResult ->
                     deliverResult(decryptResult.plaintext, copiedMessage = "Decrypted and copied to clipboard.")
@@ -180,7 +179,7 @@ class SecureTextActionActivity : ComponentActivity() {
 
     private fun doEncrypt(recipientUsername: String) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val result = secureManager.encryptForPeer(recipientUsername, selectedText)
+            val result = secureManager.encryptForUser(recipientUsername, selectedText)
             withContext(Dispatchers.Main) {
                 btnAction.isEnabled = true
                 result.onSuccess { sendResult ->

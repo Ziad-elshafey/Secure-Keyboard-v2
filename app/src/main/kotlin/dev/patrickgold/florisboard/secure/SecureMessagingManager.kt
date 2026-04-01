@@ -14,11 +14,14 @@ import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.editorInstance
 import dev.patrickgold.florisboard.ime.editor.EditorRange
 import dev.patrickgold.florisboard.secure.core.DecryptCaptureState
+import dev.patrickgold.florisboard.secure.core.ActiveSecureContact
 import dev.patrickgold.florisboard.secure.core.ManagedSecureSession
+import dev.patrickgold.florisboard.secure.core.SecureContact
 import dev.patrickgold.florisboard.secure.core.SecureOperationResult
 import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secure.core.SecureSessionState
 import dev.patrickgold.florisboard.secure.data.local.AuthTokenManager
+import dev.patrickgold.florisboard.secure.data.local.SecureContactStore
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
 import dev.patrickgold.florisboard.secure.data.local.SecureSessionStore
 import dev.patrickgold.florisboard.secure.data.remote.AuthInterceptor
@@ -65,6 +68,10 @@ class SecureMessagingManager(
 
     val sessionStore: SecureSessionStore by lazy {
         SecureSessionStore(appContext)
+    }
+
+    val contactStore: SecureContactStore by lazy {
+        SecureContactStore(appContext)
     }
 
     private val authInterceptor: AuthInterceptor by lazy {
@@ -144,6 +151,7 @@ class SecureMessagingManager(
             stegoDecodeApi = stegoDecodeApiService,
             tokenManager = tokenManager,
             keyStore = keyStore,
+            contactStore = contactStore,
         )
     }
 
@@ -159,7 +167,7 @@ class SecureMessagingManager(
 
     fun isReady(): Boolean {
         return try {
-            secureMessagingRepository.isLoggedIn() && sessionStore.hasActiveSession()
+            secureMessagingRepository.isLoggedIn() && sessionStore.hasActiveContact()
         } catch (_: Exception) {
             false
         }
@@ -177,27 +185,44 @@ class SecureMessagingManager(
 
     fun getUserId(): String? = secureMessagingRepository.getUserId()
 
+    fun getActiveContactSelection(): ActiveSecureContact? = sessionStore.getActiveContact()
+
+    fun setActiveContact(contact: ActiveSecureContact) {
+        sessionStore.setActiveContact(contact)
+    }
+
+    fun clearActiveContact() {
+        sessionStore.clearActiveContact()
+    }
+
     fun getActiveSessionSelection(): SecureSessionSelection? = sessionStore.getActiveSession()
 
     fun setActiveSession(sessionId: String, recipientName: String) {
         sessionStore.setActiveSession(sessionId = sessionId, recipientName = recipientName)
+        setActiveContact(
+            ActiveSecureContact(
+                userId = "",
+                username = recipientName,
+                displayName = null,
+            ),
+        )
     }
 
     fun clearActiveSession() {
-        sessionStore.clearActiveSession()
+        clearActiveContact()
     }
 
     fun getSecureSessionState(lastOperation: SecureOperationResult? = null): SecureSessionState {
-        val activeSession = sessionStore.getActiveSession()
+        val activeContact = sessionStore.getActiveContact()
         val loggedIn = isLoggedIn()
         return SecureSessionState(
             isLoggedIn = loggedIn,
-            activeSessionId = activeSession?.sessionId,
-            activeRecipientName = activeSession?.recipientName,
-            isSessionReady = loggedIn && activeSession != null,
+            activeSessionId = null,
+            activeRecipientName = activeContact?.username,
+            isSessionReady = loggedIn && activeContact != null,
             recoveryHint = when {
                 !loggedIn -> appContext.getString(R.string.secure__login_required)
-                activeSession == null -> appContext.getString(R.string.secure__no_session)
+                activeContact == null -> appContext.getString(R.string.secure__no_session)
                 else -> null
             },
             lastOperation = lastOperation,
@@ -207,20 +232,17 @@ class SecureMessagingManager(
     suspend fun resolveSecureSessionState(
         lastOperation: SecureOperationResult? = null,
     ): SecureSessionState {
-        val activeSession = getActiveSessionSelection()
-        if (!isLoggedIn() || activeSession == null) {
+        val activeContact = getActiveContactSelection()
+        if (!isLoggedIn() || activeContact == null) {
             return getSecureSessionState(lastOperation)
         }
 
-        val managedSession = listManagedSessions().getOrNull()
-            ?.firstOrNull { it.sessionId == activeSession.sessionId }
-
         return SecureSessionState(
             isLoggedIn = true,
-            activeSessionId = activeSession.sessionId,
-            activeRecipientName = activeSession.recipientName,
-            isSessionReady = managedSession?.canSend ?: true,
-            recoveryHint = managedSession?.recoveryHint,
+            activeSessionId = null,
+            activeRecipientName = activeContact.username,
+            isSessionReady = true,
+            recoveryHint = null,
             lastOperation = lastOperation,
         )
     }
@@ -235,22 +257,38 @@ class SecureMessagingManager(
 
     fun logout() {
         secureMessagingRepository.logout()
-        clearActiveSession()
+        clearActiveContact()
     }
 
     suspend fun searchUsers(query: String): Result<List<UserSearchResult>> {
         return secureMessagingRepository.searchUsers(query)
     }
 
+    suspend fun addContactFromSearchResult(user: UserSearchResult): Result<SecureContact> {
+        return secureMessagingRepository.addContactFromSearchResult(user)
+    }
+
+    suspend fun listContacts(): Result<List<SecureContact>> {
+        return secureMessagingRepository.listContacts()
+    }
+
+    suspend fun removeContact(username: String): Result<Unit> {
+        return secureMessagingRepository.removeContact(username)
+    }
+
+    suspend fun ensureSessionForContact(contact: ActiveSecureContact): Result<SecureSessionSelection> {
+        return secureMessagingRepository.ensureSessionForContact(contact)
+    }
+
     suspend fun listManagedSessions(): Result<List<ManagedSecureSession>> {
-        val activeSessionId = getActiveSessionSelection()?.sessionId
+        val activeUsername = getActiveContactSelection()?.username
         return secureMessagingRepository.listSessions().map { sessions ->
             sessions
                 .filter { it.isActive }
                 .map { session ->
                     buildManagedSession(
                         session = session,
-                        activeSessionId = activeSessionId,
+                        activeSessionId = activeUsername,
                     )
                 }
         }
@@ -268,7 +306,13 @@ class SecureMessagingManager(
                 sessionId = sessionInfo.sessionId,
                 recipientName = sessionInfo.peerUsername,
             ).also { selection ->
-                setActiveSession(selection.sessionId, selection.recipientName)
+                setActiveContact(
+                    ActiveSecureContact(
+                        userId = peerUserId,
+                        username = selection.recipientName,
+                        displayName = null,
+                    ),
+                )
             }
         }
     }
@@ -282,9 +326,12 @@ class SecureMessagingManager(
     }
 
     suspend fun encryptWithActiveSession(plaintext: String): Result<SendResult> {
-        val activeSession = getActiveSessionSelection()
+        val activeContact = getActiveContactSelection()
             ?: return Result.failure(IllegalStateException(appContext.getString(R.string.secure__no_session)))
-        return encryptForSession(activeSession, plaintext)
+        return ensureSessionForContact(activeContact).fold(
+            onSuccess = { session -> encryptForSession(session, plaintext) },
+            onFailure = { error -> Result.failure(error) },
+        )
     }
 
     suspend fun encryptForPeer(peerUsername: String, plaintext: String): Result<SendResult> {
@@ -316,9 +363,9 @@ class SecureMessagingManager(
     }
 
     suspend fun decryptWithActiveSession(obfuscatedText: String): Result<DecryptResult> {
-        val activeSession = getActiveSessionSelection()
+        val activeSession = getActiveContactSelection()
             ?: return Result.failure(IllegalStateException(appContext.getString(R.string.secure__no_session)))
-        return decryptForSender(obfuscatedText, activeSession.recipientName)
+        return decryptForSender(obfuscatedText, activeSession.username)
     }
 
     suspend fun decryptForSender(
@@ -340,7 +387,7 @@ class SecureMessagingManager(
             return
         }
 
-        if (getActiveSessionSelection() == null) {
+        if (getActiveContactSelection() == null) {
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, R.string.secure__no_session, Toast.LENGTH_SHORT).show()
             }
@@ -394,8 +441,8 @@ class SecureMessagingManager(
             return
         }
 
-        val activeSession = getActiveSessionSelection()
-        val senderUsername = activeSession?.recipientName
+        val activeSession = getActiveContactSelection()
+        val senderUsername = activeSession?.username
         if (senderUsername.isNullOrBlank()) {
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, R.string.secure__no_session, Toast.LENGTH_SHORT).show()
@@ -472,7 +519,7 @@ class SecureMessagingManager(
             peerUsername = peerUsername,
             canSend = secureMessagingRepository.canSendToSession(session),
             recoveryHint = sessionRecoveryHint(session),
-            isActiveSelection = session.sessionId == activeSessionId,
+            isActiveSelection = peerUsername.equals(activeSessionId, ignoreCase = true),
         )
     }
 

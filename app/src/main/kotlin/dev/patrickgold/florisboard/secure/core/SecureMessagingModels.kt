@@ -5,6 +5,19 @@ data class SecureSessionSelection(
     val recipientName: String,
 )
 
+data class SecureContact(
+    val userId: String,
+    val username: String,
+    val displayName: String? = null,
+    val addedAtEpochMs: Long = System.currentTimeMillis(),
+)
+
+data class ActiveSecureContact(
+    val userId: String,
+    val username: String,
+    val displayName: String? = null,
+)
+
 data class ManagedSecureSession(
     val sessionId: String,
     val peerUsername: String,

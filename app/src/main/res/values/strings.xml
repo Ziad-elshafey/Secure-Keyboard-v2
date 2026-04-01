@@ -1167,7 +1167,7 @@
 
     <!-- Secure Messaging -->
     <string name="secure__login_required">Please log in first</string>
-    <string name="secure__no_session">No active session — select a session first</string>
+    <string name="secure__no_session">No active contact — select a contact first</string>
     <string name="secure__no_text_field">No text field available</string>
     <string name="secure__select_text_to_encrypt">Select text to encrypt first</string>
     <string name="secure__type_message_hint">Type a message first</string>
@@ -1190,5 +1190,15 @@
     <string name="settings__secure_messaging__register_button">Register</string>
     <string name="settings__secure_messaging__accessibility_title">Accessibility Service</string>
     <string name="settings__secure_messaging__accessibility_summary">Enable the decrypt-on-tap service</string>
+    <string name="secure__contacts_title">Secure Contacts</string>
+    <string name="secure__active_contact">Active contact</string>
+    <string name="secure__no_contacts">No contacts yet</string>
+    <string name="secure__clear_active_contact">Clear Active Contact</string>
+    <string name="secure__add_contact">Add Contact</string>
+    <string name="secure__refresh_contacts">Refresh Contacts</string>
+    <string name="secure__refreshing_contacts">Refreshing contacts</string>
+    <string name="secure__loading_contacts">Loading contacts...</string>
+    <string name="secure__remove_contact">Remove</string>
+    <string name="secure__active_status">Active</string>
 
 </resources>

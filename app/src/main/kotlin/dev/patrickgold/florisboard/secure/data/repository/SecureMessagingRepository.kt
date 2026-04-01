@@ -1,8 +1,12 @@
 package dev.patrickgold.florisboard.secure.data.repository
 
 import dev.patrickgold.florisboard.secure.core.StegoProviderType
+import dev.patrickgold.florisboard.secure.core.ActiveSecureContact
+import dev.patrickgold.florisboard.secure.core.SecureContact
+import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secure.core.e2ee.E2EEService
 import dev.patrickgold.florisboard.secure.data.local.AuthTokenManager
+import dev.patrickgold.florisboard.secure.data.local.SecureContactStore
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
 import dev.patrickgold.florisboard.secure.data.remote.CreateSessionRequest
 import dev.patrickgold.florisboard.secure.data.remote.DeobfuscateRequest
@@ -27,6 +31,7 @@ class SecureMessagingRepository(
     private val stegoDecodeApi: StegoDecodeApiService,
     private val tokenManager: AuthTokenManager,
     private val keyStore: SecureKeyStore,
+    private val contactStore: SecureContactStore,
 ) {
     companion object {
         private const val tag = "SecureMessagingRepo"
@@ -107,6 +112,33 @@ class SecureMessagingRepository(
 
     suspend fun searchUsers(query: String): Result<List<UserSearchResult>> = runCatching {
         api.searchUsers(query)
+    }
+
+    suspend fun addContactFromSearchResult(user: UserSearchResult): Result<SecureContact> = runCatching {
+        val activeUserId = tokenManager.getUserId()
+            ?: error("Not logged in - cannot add contact")
+        val verified = api.searchUsers(user.username)
+            .firstOrNull { it.userId == user.userId && it.username.equals(user.username, ignoreCase = true) }
+            ?: error("User no longer available: ${user.username}")
+        val contact = SecureContact(
+            userId = verified.userId,
+            username = verified.username,
+            displayName = verified.displayName,
+        )
+        contactStore.upsertContact(activeUserId, contact)
+        contact
+    }
+
+    suspend fun listContacts(): Result<List<SecureContact>> = runCatching {
+        val activeUserId = tokenManager.getUserId()
+            ?: error("Not logged in - cannot list contacts")
+        contactStore.listContacts(activeUserId)
+    }
+
+    suspend fun removeContact(username: String): Result<Unit> = runCatching {
+        val activeUserId = tokenManager.getUserId()
+            ?: error("Not logged in - cannot remove contact")
+        contactStore.removeContact(activeUserId, username)
     }
 
     suspend fun createSession(peerUsername: String, peerUserId: String): Result<SessionInfo> = runCatching {
@@ -236,6 +268,48 @@ class SecureMessagingRepository(
         }
 
         sendMessage(sessionId, peerUsername, plaintext).getOrThrow()
+    }
+
+    suspend fun ensureSessionForContact(contact: ActiveSecureContact): Result<SecureSessionSelection> = runCatching {
+        val peerUsername = contact.username
+        val activeSessions = api.listSessions(activeOnly = true)
+        val existing = activeSessions
+            .filter { s ->
+                (s.initiatorUsername.equals(peerUsername, ignoreCase = true)
+                    || s.responderUsername.equals(peerUsername, ignoreCase = true))
+                    && !s.initiatorUsername.equals(s.responderUsername, ignoreCase = true)
+            }
+            .sortedByDescending { it.createdAt }
+            .firstOrNull()
+
+        if (existing != null) {
+            if (keyStore.getSharedSecret(existing.sessionId) == null) {
+                getOrEstablishSharedSecretForSend(existing.sessionId, peerUsername)
+            }
+            return@runCatching SecureSessionSelection(
+                sessionId = existing.sessionId,
+                recipientName = peerUsername,
+            )
+        }
+
+        val resolvedUser = if (contact.userId.isNotBlank()) {
+            UserSearchResult(
+                userId = contact.userId,
+                username = contact.username,
+                displayName = contact.displayName,
+                isActive = true,
+            )
+        } else {
+            api.searchUsers(peerUsername)
+                .firstOrNull { it.username.equals(peerUsername, ignoreCase = true) }
+                ?: error("User '$peerUsername' not found.")
+        }
+
+        val session = createSession(resolvedUser.username, resolvedUser.userId).getOrThrow()
+        SecureSessionSelection(
+            sessionId = session.sessionId,
+            recipientName = session.peerUsername,
+        )
     }
 
     suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<DecryptResult> = runCatching {
