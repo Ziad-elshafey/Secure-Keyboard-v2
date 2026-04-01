@@ -35,15 +35,8 @@ class SecureMessagingRepository(
         private const val defaultStegoContext = "car"
     }
 
-    private val compressionEnabled: Boolean by lazy {
-        try {
-            CompressionService.compress("test")
-            true
-        } catch (_: Exception) {
-            Log.w(tag, "Compression vocab unavailable - falling back to raw mode")
-            false
-        }
-    }
+    /** Off: custom arithmetic compression disabled; raw UTF-8 payloads only (0x00). */
+    private val compressionEnabled: Boolean = false
 
     suspend fun register(username: String, password: String): Result<String> = runCatching {
         val email = "$username@example.com"
@@ -78,7 +71,8 @@ class SecureMessagingRepository(
         tokenManager.saveUserInfo(user.userId, user.username)
         keyStore.setActiveUser(user.userId)
 
-        if (!keyStore.hasIdentityKeys()) {
+        val keyStatus = api.getKeyStatus()
+        if (!keyStore.hasIdentityKeys() || !keyStatus.hasIdentityKey || !keyStatus.hasSignedPrekey) {
             val identityKeyPair = E2EEService.generateIdentityKeyPair()
             val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
 
@@ -106,7 +100,6 @@ class SecureMessagingRepository(
 
     fun logout() {
         if (keyStore.hasActiveUser()) {
-            keyStore.clearSessionMaterialForActiveUser()
             keyStore.clearActiveUser()
         }
         tokenManager.clearAll()
@@ -214,6 +207,37 @@ class SecureMessagingRepository(
         )
     }
 
+    suspend fun sendMessageToUser(peerUsername: String, plaintext: String): Result<SendResult> = runCatching {
+        val myUsername = tokenManager.getUsername()
+        require(!peerUsername.equals(myUsername, ignoreCase = true)) { "Cannot send a message to yourself." }
+
+        val sessions = api.listSessions(activeOnly = true)
+        val existing = sessions
+            .filter { s ->
+                (s.initiatorUsername.equals(peerUsername, ignoreCase = true)
+                    || s.responderUsername.equals(peerUsername, ignoreCase = true))
+                    && !s.initiatorUsername.equals(s.responderUsername, ignoreCase = true)
+            }
+            .sortedByDescending { it.createdAt }
+            .firstOrNull()
+
+        val sessionId: String
+        if (existing != null) {
+            sessionId = existing.sessionId
+            if (keyStore.getSharedSecret(sessionId) == null) {
+                getOrEstablishSharedSecretForSend(sessionId, peerUsername)
+            }
+        } else {
+            val users = api.searchUsers(peerUsername)
+            val target = users.firstOrNull { it.username.equals(peerUsername, ignoreCase = true) }
+                ?: error("User '$peerUsername' not found.")
+            val session = createSession(peerUsername, target.userId).getOrThrow()
+            sessionId = session.sessionId
+        }
+
+        sendMessage(sessionId, peerUsername, plaintext).getOrThrow()
+    }
+
     suspend fun decryptMessage(obfuscatedText: String, senderUsername: String): Result<DecryptResult> = runCatching {
         Log.d(tag, "decryptMessage: sender=$senderUsername")
 
@@ -234,22 +258,33 @@ class SecureMessagingRepository(
         )
 
         val sessions = api.listSessions(activeOnly = true)
-        val session = sessions.firstOrNull { s ->
-            s.initiatorUsername == senderUsername || s.responderUsername == senderUsername
-        } ?: error("No active session found with $senderUsername")
+        val candidates = sessions
+            .filter { s -> s.initiatorUsername == senderUsername || s.responderUsername == senderUsername }
+            .sortedByDescending { it.createdAt }
 
-        val sharedSecret = getOrEstablishSharedSecretForReceive(session.sessionId)
-        val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(decoded.packedCiphertext)
-        Log.d(tag, "decryptMessage: packed=${decoded.packedCiphertext.size}B ciphertext=${ciphertext.size}B counter=$counter")
+        check(candidates.isNotEmpty()) { "No active session found with $senderUsername" }
+        Log.d(tag, "decryptMessage: ${candidates.size} candidate session(s) for sender=$senderUsername")
 
-        val payload = E2EEService.chacha20Decrypt(ciphertext, sharedSecret, counter)
-        val plaintext = parsePayload(payload)
-        Log.d(tag, "decryptMessage: success plaintext=${plaintext.take(50)}...")
-        DecryptResult(
-            plaintext = plaintext,
-            providerType = decoded.providerType,
-            usedFallback = decoded.usedFallback,
-        )
+        var lastError: Throwable? = null
+        for (session in candidates) {
+            try {
+                val sharedSecret = getOrEstablishSharedSecretForReceive(session.sessionId)
+                val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(decoded.packedCiphertext)
+                Log.d(tag, "decryptMessage: trying session=${session.sessionId} ciphertext=${ciphertext.size}B counter=$counter")
+                val payload = E2EEService.chacha20Decrypt(ciphertext, sharedSecret, counter)
+                val plaintext = parsePayload(payload)
+                Log.d(tag, "decryptMessage: success session=${session.sessionId} plaintext=${plaintext.take(50)}...")
+                return@runCatching DecryptResult(
+                    plaintext = plaintext,
+                    providerType = decoded.providerType,
+                    usedFallback = decoded.usedFallback,
+                )
+            } catch (e: Exception) {
+                Log.w(tag, "decryptMessage: session=${session.sessionId} failed: ${e.message}")
+                lastError = e
+            }
+        }
+        error("Failed to decrypt message from $senderUsername with ${candidates.size} active session(s): ${lastError?.message}")
     }.onFailure { e ->
         Log.e(tag, "decryptMessage: failed", e)
     }
@@ -291,7 +326,12 @@ class SecureMessagingRepository(
         }
 
         if (session.initiatorId == myUserId) {
-            error("Session with $peerUsername was created on another install or this device lost its local keys. Recreate the session.")
+            runCatching { api.deactivateSession(sessionId) }
+            val peerId = session.responderId
+            val resolvedPeerUsername = session.responderUsername
+            val newSession = createSession(resolvedPeerUsername, peerId).getOrThrow()
+            return keyStore.getSharedSecret(newSession.sessionId)
+                ?: error("Failed to establish shared secret after session re-key")
         }
 
         error("Cannot use session $sessionId for the current user")
@@ -383,13 +423,31 @@ class SecureMessagingRepository(
 
     private fun buildStegoContext(): String = defaultStegoContext
 
+    /** Server Modal path expects 2-byte BE length + packed (ciphertext||counter). */
+    private fun framePackedForServerObfuscation(packed: ByteArray): ByteArray {
+        val n = packed.size
+        require(n in 1..65535) { "packed size $n out of range for 16-bit length prefix" }
+        return byteArrayOf((n shr 8).toByte(), (n and 0xFF).toByte()) + packed
+    }
+
+    /** Remove framing when `size == 2 + declaredLength`; else pass through (Modal / legacy). */
+    private fun unpackServerObfuscationCiphertextBytes(data: ByteArray): ByteArray {
+        if (data.size < 3) return data
+        val declared = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+        if (declared in 1..65535 && data.size == 2 + declared) {
+            return data.copyOfRange(2, 2 + declared)
+        }
+        return data
+    }
+
     private suspend fun obfuscateWithServer(
         packedCiphertext: ByteArray,
         peerUsername: String,
     ): SendResult {
+        val framed = framePackedForServerObfuscation(packedCiphertext)
         val response = api.obfuscate(
             ObfuscateRequest(
-                ciphertextB64 = E2EEService.toBase64(packedCiphertext),
+                ciphertextB64 = E2EEService.toBase64(framed),
                 peerUsername = peerUsername,
             ),
         )
@@ -419,7 +477,8 @@ class SecureMessagingRepository(
         senderUsername: String,
     ): PackedDecryptResult {
         val response = api.deobfuscate(DeobfuscateRequest(obfuscatedText, senderUsername))
-        val packedCiphertext = E2EEService.fromBase64(response.ciphertextB64)
+        val raw = E2EEService.fromBase64(response.ciphertextB64)
+        val packedCiphertext = unpackServerObfuscationCiphertextBytes(raw)
         require(packedCiphertext.size >= 3) {
             "Server returned incomplete packed ciphertext (${packedCiphertext.size} bytes)"
         }

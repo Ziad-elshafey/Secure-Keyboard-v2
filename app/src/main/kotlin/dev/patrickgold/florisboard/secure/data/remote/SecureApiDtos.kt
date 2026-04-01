@@ -82,6 +82,7 @@ data class KeyStatusResponse(
 data class CreateSessionRequest(
     @SerializedName("peer_username") val peerUsername: String,
     @SerializedName("ephemeral_public_key") val ephemeralPublicKey: String,
+    @SerializedName("context") val context: String? = null,
 )
 
 data class SessionResponse(

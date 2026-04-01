@@ -296,6 +296,10 @@ class SecureMessagingManager(
         )
     }
 
+    suspend fun encryptForUser(peerUsername: String, plaintext: String): Result<SendResult> {
+        return secureMessagingRepository.sendMessageToUser(peerUsername, plaintext)
+    }
+
     suspend fun encryptForSession(
         selection: SecureSessionSelection,
         plaintext: String,
@@ -477,7 +481,7 @@ class SecureMessagingManager(
             return null
         }
         return if (secureMessagingRepository.requiresSessionRecreationForSend(session)) {
-            "Recreate session on this device"
+            "Session will be re-keyed automatically on first send"
         } else {
             "Send not ready on this device"
         }
