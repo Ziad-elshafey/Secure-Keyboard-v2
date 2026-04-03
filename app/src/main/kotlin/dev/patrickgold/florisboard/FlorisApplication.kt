@@ -62,10 +62,14 @@ private var FlorisApplicationReference = WeakReference<FlorisApplication?>(null)
 @Suppress("unused")
 class FlorisApplication : Application() {
     companion object {
+        private var isNativeLibraryLoaded: Boolean = false
+
         init {
             try {
                 System.loadLibrary("fl_native")
-            } catch (_: Exception) {
+                isNativeLibraryLoaded = true
+            } catch (_: Throwable) {
+                isNativeLibraryLoaded = false
             }
         }
     }
@@ -98,7 +102,9 @@ class FlorisApplication : Application() {
             )
             CrashUtility.install(this)
             FlorisEmojiCompat.init(this)
-            flogError { "dummy result: ${dummyAdd(3,4)}" }
+            if (isNativeLibraryLoaded) {
+                flogError { "dummy result: ${dummyAdd(3,4)}" }
+            }
 
             if (!UserManagerCompat.isUserUnlocked(this)) {
                 cacheDir?.deleteContentsRecursively()
@@ -108,7 +114,7 @@ class FlorisApplication : Application() {
             }
 
             init()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             CrashUtility.stageException(e)
             return
         }

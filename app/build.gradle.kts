@@ -15,8 +15,11 @@
  */
 
 import com.android.build.api.dsl.ApplicationExtension
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.Project
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.agp.application)
@@ -40,14 +43,9 @@ val projectVersionNameSuffix = projectVersionName.substringAfter("-", "").let { 
         suffix
     }
 }
-val releaseSecureApiBaseUrl = providers.gradleProperty("SECURE_API_BASE_URL")
-    .orElse("https://secure.example.invalid/")
-val debugSecureApiBaseUrl = providers.gradleProperty("DEBUG_SECURE_API_BASE_URL")
-    .orElse("http://18.233.108.148:8000/")
-val stegoEncodeBaseUrl = providers.gradleProperty("STEGO_ENCODE_BASE_URL")
-    .orElse("https://modalcd--encode.modal.run/")
-val stegoDecodeBaseUrl = providers.gradleProperty("STEGO_DECODE_BASE_URL")
-    .orElse("https://modalcd--decode.modal.run/")
+// rootProject.file(".kotlin/sessions").mkdirs()
+// projectDir.resolve(".kotlin/sessions").mkdirs()
+// File(System.getProperty("user.home"), ".kotlin/sessions").mkdirs()
 
 kotlin {
     compilerOptions {
@@ -63,6 +61,19 @@ kotlin {
     }
 }
 
+val secureServerItFromLocalProperties: Map<String, String> = run {
+    val f = rootProject.file("local.properties")
+    if (!f.exists()) return@run emptyMap()
+    val p = Properties()
+    f.inputStream().use { p.load(it) }
+    fun get(key: String) = p.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+    mapOf(
+        "secureServerIt" to get("secure.server.it"),
+        "secureServerItUsernamePrefix" to get("secure.server.it.username.prefix"),
+        "secureServerItPassword" to get("secure.server.it.password"),
+    ).mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+}
+
 configure<ApplicationExtension> {
     namespace = "dev.patrickgold.florisboard"
     compileSdk = projectCompileSdk.toInt()
@@ -75,7 +86,7 @@ configure<ApplicationExtension> {
     }
 
     defaultConfig {
-        applicationId = "dev.patrickgold.florisboard.secure"
+        applicationId = "dev.patrickgold.florisboard"
         minSdk = projectMinSdk.toInt()
         targetSdk = projectTargetSdk.toInt()
         versionCode = projectVersionCode.toInt()
@@ -83,14 +94,24 @@ configure<ApplicationExtension> {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        val secureServerTestProps = mapOf(
+            "secureServerIt" to "SECURE_SERVER_IT",
+            "secureServerItUsernamePrefix" to "SECURE_SERVER_IT_USERNAME_PREFIX",
+            "secureServerItPassword" to "SECURE_SERVER_IT_PASSWORD",
+        )
+        secureServerTestProps.forEach { (propertyName, envName) ->
+            val configuredValue = providers.gradleProperty(propertyName)
+                .orElse(providers.environmentVariable(envName))
+                .orNull
+                ?: secureServerItFromLocalProperties[propertyName]
+            if (configuredValue != null) {
+                testInstrumentationRunnerArguments[propertyName] = configuredValue
+            }
+        }
+
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
-        buildConfigField("String", "SECURE_API_BASE_URL", "\"${releaseSecureApiBaseUrl.get()}\"")
-        buildConfigField("String", "STEGO_ENCODE_BASE_URL", "\"${stegoEncodeBaseUrl.get()}\"")
-        buildConfigField("String", "STEGO_DECODE_BASE_URL", "\"${stegoDecodeBaseUrl.get()}\"")
-
-        // Main manifest uses ${secureUsesCleartextTraffic}; debug enables HTTP to e.g. 10.0.2.2
         manifestPlaceholders["secureUsesCleartextTraffic"] = "false"
 
         sourceSets {
@@ -121,7 +142,9 @@ configure<ApplicationExtension> {
 
             isDebuggable = true
             isJniDebuggable = false
-            buildConfigField("String", "SECURE_API_BASE_URL", "\"${debugSecureApiBaseUrl.get()}\"")
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "http://18.233.108.148:8000/")))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
             manifestPlaceholders["secureUsesCleartextTraffic"] = "true"
         }
 
@@ -132,6 +155,9 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
 
         named("release") {
@@ -140,6 +166,9 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
 
         create("benchmark") {
@@ -150,6 +179,9 @@ configure<ApplicationExtension> {
 
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
+            buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
         }
     }
 
@@ -248,6 +280,8 @@ dependencies {
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    androidTestImplementation(libs.junit4)
+    androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.androidx.test.espresso.core)
 }
@@ -266,3 +300,37 @@ fun getGitCommitHash(short: Boolean = false): Provider<String> {
     }
     return execProvider.standardOutput.asText.map { it.trim() }
 }
+
+fun Project.resolveSecureEndpoint(
+    propertyName: String,
+    envName: String,
+    fallbackValue: String? = null,
+    requireHttps: Boolean = false,
+    disallowPlaceholder: Boolean = false,
+): String {
+    val configuredValue = providers.gradleProperty(propertyName)
+        .orElse(providers.environmentVariable(envName))
+        .orNull
+    val value = configuredValue ?: fallbackValue
+        ?: throw GradleException("Missing required secure endpoint '$envName' (or Gradle property '$propertyName').")
+    val shouldEnforcePlaceholderCheck = gradle.startParameter.taskNames.any { taskName ->
+        taskName.contains("release", ignoreCase = true) ||
+            taskName.contains("beta", ignoreCase = true) ||
+            taskName.contains("benchmark", ignoreCase = true)
+    }
+
+    if (requireHttps && !value.startsWith("https://")) {
+        throw GradleException("Secure endpoint '$envName' must use HTTPS: $value")
+    }
+    if (
+        disallowPlaceholder &&
+        shouldEnforcePlaceholderCheck &&
+        (configuredValue == null || value.contains("example.com") || value.contains(".invalid"))
+    ) {
+        throw GradleException("Secure endpoint '$envName' must be configured for this environment.")
+    }
+
+    return value
+}
+
+fun quoted(value: String): String = "\"$value\""

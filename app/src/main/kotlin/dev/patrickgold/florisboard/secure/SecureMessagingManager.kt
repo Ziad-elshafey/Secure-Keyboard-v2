@@ -3,10 +3,18 @@ package dev.patrickgold.florisboard.secure
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.util.Log
+import android.view.Gravity
+import android.view.ViewGroup
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.ExtractedTextRequest
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.PopupWindow
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import dev.patrickgold.florisboard.BuildConfig
 import dev.patrickgold.florisboard.FlorisImeService
@@ -35,7 +43,6 @@ import dev.patrickgold.florisboard.secure.data.repository.DecryptResult
 import dev.patrickgold.florisboard.secure.data.repository.SecureMessagingRepository
 import dev.patrickgold.florisboard.secure.data.repository.SendResult
 import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
-import dev.patrickgold.florisboard.secure.ui.DecryptResultActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -46,12 +53,15 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
+import kotlin.math.max
 
 class SecureMessagingManager(
     context: Context,
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var secureStatusPopup: PopupWindow? = null
+    private var secureLoadingPopup: PopupWindow? = null
     private val loggingLevel = if (BuildConfig.DEBUG) {
         HttpLoggingInterceptor.Level.HEADERS
     } else {
@@ -75,7 +85,9 @@ class SecureMessagingManager(
     }
 
     private val authInterceptor: AuthInterceptor by lazy {
-        AuthInterceptor(tokenManager)
+        AuthInterceptor(tokenManager) {
+            secureRefreshRetrofit.create(SecureApiService::class.java)
+        }
     }
 
     private val secureRefreshRetrofit: Retrofit by lazy {
@@ -403,7 +415,7 @@ class SecureMessagingManager(
         }
 
         withContext(Dispatchers.Main) {
-            Toast.makeText(context, R.string.secure__encrypting, Toast.LENGTH_SHORT).show()
+            showOperationLoadingOverlay(appContext.getString(R.string.secure__encrypting))
         }
 
         val result = withContext(Dispatchers.IO) {
@@ -412,6 +424,7 @@ class SecureMessagingManager(
 
         withContext(Dispatchers.Main) {
             result.onSuccess { sendResult ->
+                hideOperationLoadingOverlay()
                 val replaced = replaceEditorText(editorTarget.range, sendResult.obfuscatedText)
                 if (replaced) {
                     copyToClipboard(context, sendResult.obfuscatedText)
@@ -424,6 +437,7 @@ class SecureMessagingManager(
                     Toast.makeText(context, R.string.secure__no_text_field, Toast.LENGTH_SHORT).show()
                 }
             }.onFailure { e ->
+                hideOperationLoadingOverlay()
                 Toast.makeText(
                     context,
                     formatFailure(prefix = "Encrypt failed", throwable = e),
@@ -475,24 +489,32 @@ class SecureMessagingManager(
     fun performDecryption(context: Context, ciphertext: String, recipientName: String) {
         Log.d(TAG, "performDecryption: text length=${ciphertext.length}")
 
-        scope.launch(Dispatchers.IO) {
-            val result = decryptForSender(ciphertext, recipientName)
-            withContext(Dispatchers.Main) {
-                result.onSuccess { decryptResult ->
-                    Log.d(
-                        TAG,
-                        "performDecryption: provider=${decryptResult.providerType} fallback=${decryptResult.usedFallback}",
-                    )
-                    launchDecryptResult(context, recipientName, decryptResult.plaintext, null)
-                }.onFailure { e ->
-                    Log.e(TAG, "Decrypt failed: input length=${ciphertext.length}, error=${e.message}")
-                    launchDecryptResult(
-                        context = context,
-                        recipientName = recipientName,
-                        plaintext = null,
-                        error = "Decrypt failed (${ciphertext.length} chars): ${e.message?.take(80)}",
-                    )
+        scope.launch(Dispatchers.Main) {
+            showOperationLoadingOverlay(appContext.getString(R.string.secure__decrypting))
+            val result = withContext(Dispatchers.IO) {
+                decryptForSender(ciphertext, recipientName)
+            }
+            result.onSuccess { decryptResult ->
+                hideOperationLoadingOverlay()
+                Log.d(
+                    TAG,
+                    "performDecryption: provider=${decryptResult.providerType} fallback=${decryptResult.usedFallback}",
+                )
+                val replaced = replaceCiphertextInEditor(ciphertext, decryptResult.plaintext)
+                copyToClipboard(context, decryptResult.plaintext)
+                val preview = decryptResult.plaintext.let {
+                    if (it.length > 180) it.take(180) + "..." else it
                 }
+                val message = if (replaced) {
+                    appContext.getString(R.string.secure__decrypted_preview_replaced, preview)
+                } else {
+                    appContext.getString(R.string.secure__decrypted_preview_copied, preview)
+                }
+                showSecureStatusBanner(message)
+            }.onFailure { e ->
+                hideOperationLoadingOverlay()
+                Log.e(TAG, "Decrypt failed: input length=${ciphertext.length}, error=${e.message}")
+                showSecureStatusBanner(formatFailure(prefix = "Decrypt failed", throwable = e), isError = true)
             }
         }
     }
@@ -572,6 +594,16 @@ class SecureMessagingManager(
         }
     }
 
+    private fun replaceCiphertextInEditor(ciphertext: String, plaintext: String): Boolean {
+        val target = resolveWholeEditorTextTarget() ?: return false
+        if (ciphertext.isBlank()) return false
+        val index = target.text.indexOf(ciphertext)
+        if (index < 0) return false
+        val rangeStart = target.range.start + index
+        val rangeEnd = rangeStart + ciphertext.length
+        return replaceEditorText(EditorRange(rangeStart, rangeEnd), plaintext)
+    }
+
     private fun currentInputConnection(): InputConnection? {
         return FlorisImeService.currentInputConnection()
     }
@@ -581,23 +613,107 @@ class SecureMessagingManager(
         clipboard.setPrimaryClip(ClipData.newPlainText("Secure Text", text))
     }
 
-    private fun launchDecryptResult(
-        context: Context,
-        recipientName: String,
-        plaintext: String?,
-        error: String?,
-    ) {
-        val intent = Intent(context, DecryptResultActivity::class.java).apply {
-            putExtra(DecryptResultActivity.EXTRA_SENDER, recipientName)
-            if (plaintext != null) {
-                putExtra(DecryptResultActivity.EXTRA_PLAINTEXT, plaintext)
-            }
-            if (error != null) {
-                putExtra(DecryptResultActivity.EXTRA_ERROR, error)
-            }
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    private fun showOperationLoadingOverlay(message: String) {
+        val anchor = FlorisImeService.currentDecorView()
+        if (anchor == null) {
+            Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+            return
         }
-        context.startActivity(intent)
+        hideOperationLoadingOverlay()
+
+        val context = anchor.context
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = panelDrawable()
+        }
+        val progress = ProgressBar(context).apply {
+            isIndeterminate = true
+        }
+        val messageView = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            text = message
+            setPadding(dp(10), 0, 0, 0)
+        }
+        container.addView(progress)
+        container.addView(messageView)
+
+        val popup = PopupWindow(
+            container,
+            max(dp(220), (anchor.width * 0.64f).toInt()),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            false,
+        ).apply {
+            isOutsideTouchable = false
+            isTouchable = false
+            elevation = dp(2).toFloat()
+        }
+        popup.showAtLocation(anchor, Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, dp(26))
+        secureLoadingPopup = popup
+    }
+
+    private fun hideOperationLoadingOverlay() {
+        secureLoadingPopup?.dismiss()
+        secureLoadingPopup = null
+    }
+
+    private fun showSecureStatusBanner(message: String, isError: Boolean = false) {
+        val anchor = FlorisImeService.currentDecorView()
+        if (anchor == null) {
+            Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+            return
+        }
+        secureStatusPopup?.dismiss()
+
+        val context = anchor.context
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(10), dp(12))
+            background = panelDrawable(isError = isError)
+        }
+        val messageView = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            text = message
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val close = Button(context).apply {
+            text = appContext.getString(R.string.secure__dismiss)
+            isAllCaps = false
+            setOnClickListener {
+                secureStatusPopup?.dismiss()
+                secureStatusPopup = null
+            }
+        }
+        container.addView(messageView)
+        container.addView(close)
+
+        val popup = PopupWindow(
+            container,
+            max(dp(280), (anchor.width * 0.92f).toInt()),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true,
+        ).apply {
+            isOutsideTouchable = true
+            elevation = dp(2).toFloat()
+        }
+        popup.showAtLocation(anchor, Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, dp(26))
+        secureStatusPopup = popup
+    }
+
+    private fun panelDrawable(isError: Boolean = false): GradientDrawable {
+        return GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setColor(if (isError) 0xCCB3261E.toInt() else 0xCC1F2937.toInt())
+            setStroke(dp(1), 0x66FFFFFF)
+        }
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * appContext.resources.displayMetrics.density).toInt()
     }
 
     private fun buildOperationError(prefix: String, throwable: Throwable): SecureOperationResult {

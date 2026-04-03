@@ -2,6 +2,7 @@ package dev.patrickgold.florisboard.app.settings.secure
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
@@ -35,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
@@ -62,11 +65,16 @@ fun SecureMessagingScreen() = FlorisScreen {
         val sectionSpacing = 12.dp
         val cardContentPadding = 12.dp
         val compactRowSpacing = 8.dp
+        val panelContentPadding = 12.dp
+        val panelHeaderBottomSpacing = 4.dp
         val primaryControlHeight = 56.dp
         val secondaryControlHeight = 40.dp
         val actionButtonHeight = 36.dp
-        val searchButtonWidth = 88.dp
-        val searchButtonHeight = 48.dp
+        val searchButtonWidth = 112.dp
+        val searchButtonHeight = 52.dp
+        val panelContainerColor = MaterialTheme.colorScheme.surface
+        val panelBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        val panelShape = RoundedCornerShape(16.dp)
 
         var isLoggedIn by remember { mutableStateOf(secureManager.isLoggedIn()) }
         var username by remember { mutableStateOf("") }
@@ -120,13 +128,30 @@ fun SecureMessagingScreen() = FlorisScreen {
             }
         }
 
-        PreferenceGroup(title = stringRes(R.string.settings__secure_messaging__login_title)) {
-            Column(
+        PreferenceGroup(title = "") {
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = contentHorizontalPadding, vertical = sectionVerticalPadding),
-                verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                colors = CardDefaults.cardColors(
+                    containerColor = panelContainerColor,
+                ),
+                border = panelBorder,
+                shape = panelShape,
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(panelContentPadding),
+                    verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                ) {
+                Text(
+                    text = "Account",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(bottom = panelHeaderBottomSpacing),
+                )
                 if (isLoggedIn) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -278,16 +303,34 @@ fun SecureMessagingScreen() = FlorisScreen {
                     }
                 }
             }
+            }
         }
 
         if (isLoggedIn) {
-            PreferenceGroup(title = stringRes(R.string.secure__contacts_title)) {
-                Column(
+            PreferenceGroup(title = "") {
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = contentHorizontalPadding, vertical = sectionVerticalPadding),
-                    verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                    colors = CardDefaults.cardColors(
+                        containerColor = panelContainerColor,
+                    ),
+                    border = panelBorder,
+                    shape = panelShape,
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(panelContentPadding),
+                        verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                    ) {
+                    Text(
+                        text = "Contacts",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(bottom = panelHeaderBottomSpacing),
+                    )
                     if (!activeContact?.username.isNullOrBlank()) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -380,14 +423,15 @@ fun SecureMessagingScreen() = FlorisScreen {
                             },
                             enabled = !isSearching,
                             modifier = Modifier
-                                .padding(top = 2.dp)
-                                .width(96.dp)
+                                .padding(top = 1.dp)
+                                .width(searchButtonWidth)
                                 .height(searchButtonHeight),
                         ) {
                             Text(
                                 text = if (isSearching) "Searching" else "Search",
                                 maxLines = 1,
                                 softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -556,34 +600,53 @@ fun SecureMessagingScreen() = FlorisScreen {
                         }
                     }
                 }
+                }
             }
         }
 
-        PreferenceGroup(title = stringRes(R.string.settings__secure_messaging__accessibility_title)) {
-            Column(
+        PreferenceGroup(title = "") {
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = contentHorizontalPadding, vertical = sectionVerticalPadding),
-                verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                colors = CardDefaults.cardColors(
+                    containerColor = panelContainerColor,
+                ),
+                border = panelBorder,
+                shape = panelShape,
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             ) {
-                Text(
-                    text = stringRes(R.string.settings__secure_messaging__accessibility_summary),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Button(
-                    onClick = {
-                        context.startActivity(
-                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            },
-                        )
-                    },
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(secondaryControlHeight),
+                        .padding(panelContentPadding),
+                    verticalArrangement = Arrangement.spacedBy(sectionSpacing),
                 ) {
-                    Text("Open Accessibility Settings")
+                    Text(
+                        text = "Accessibility",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(bottom = panelHeaderBottomSpacing),
+                    )
+                    Text(
+                        text = stringRes(R.string.settings__secure_messaging__accessibility_summary),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                },
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(secondaryControlHeight),
+                    ) {
+                        Text("Open Accessibility Settings")
+                    }
                 }
             }
         }
@@ -591,3 +654,4 @@ fun SecureMessagingScreen() = FlorisScreen {
         Spacer(modifier = Modifier.height(16.dp))
     }
 }
+

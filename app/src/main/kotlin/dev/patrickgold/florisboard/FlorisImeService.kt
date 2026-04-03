@@ -146,6 +146,11 @@ class FlorisImeService : LifecycleInputMethodService() {
             val ims = FlorisImeServiceReference.get() ?: return null
             return ims.windowController
         }
+
+        fun currentDecorView(): View? {
+            val ims = FlorisImeServiceReference.get() ?: return null
+            return ims.window.window?.decorView
+        }
     }
 
     fun hideUi() {

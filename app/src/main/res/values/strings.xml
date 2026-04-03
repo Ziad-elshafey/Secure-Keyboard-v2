@@ -1173,6 +1173,12 @@
     <string name="secure__type_message_hint">Type a message first</string>
     <string name="secure__encrypting">Encrypting…</string>
     <string name="secure__encrypted_done">Encrypted!</string>
+    <string name="secure__decrypted_done">Decrypted!</string>
+    <string name="secure__decrypted_copied">Decrypted and copied to clipboard</string>
+    <string name="secure__decrypted_preview_replaced">Decrypted text: %1$s</string>
+    <string name="secure__decrypted_preview_copied">Decrypted text (copied): %1$s</string>
+    <string name="secure__decrypting">Decrypting...</string>
+    <string name="secure__dismiss">Dismiss</string>
     <string name="secure__decrypt_capture_waiting">Tap on the message to decrypt</string>
     <string name="secure__decrypt_capture_cancelled">Capture cancelled</string>
     <string name="secure__decrypt_capture_enable_service">Enable the accessibility service or copy text to clipboard first</string>

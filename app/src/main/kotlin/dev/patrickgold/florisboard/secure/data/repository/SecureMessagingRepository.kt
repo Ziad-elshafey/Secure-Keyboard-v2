@@ -206,11 +206,13 @@ class SecureMessagingRepository(
     }
 
     suspend fun sendMessage(sessionId: String, peerUsername: String, plaintext: String): Result<SendResult> = runCatching {
-        val sharedSecret = getOrEstablishSharedSecretForSend(sessionId, peerUsername)
+        val sendContext = getOrEstablishSharedSecretForSend(sessionId, peerUsername)
+        val activeSessionId = sendContext.sessionId
+        val sharedSecret = sendContext.sharedSecret
 
-        val counterResp = api.getNextCounter(sessionId)
+        val counterResp = api.getNextCounter(activeSessionId)
         val counter = counterResp.counter
-        Log.d(tag, "sendMessage: got counter=$counter for session=$sessionId peer=$peerUsername")
+        Log.d(tag, "sendMessage: got counter=$counter for session=$activeSessionId peer=$peerUsername")
 
         val payload = buildPayload(plaintext)
         val ciphertext = E2EEService.chacha20Encrypt(payload, sharedSecret, counter)
@@ -375,9 +377,9 @@ class SecureMessagingRepository(
         return !keyStore.hasSharedSecret(session.sessionId) && session.initiatorId == myUserId
     }
 
-    private suspend fun getOrEstablishSharedSecretForSend(sessionId: String, peerUsername: String): ByteArray {
+    private suspend fun getOrEstablishSharedSecretForSend(sessionId: String, peerUsername: String): SendContext {
         val cached = keyStore.getSharedSecret(sessionId)
-        if (cached != null) return cached
+        if (cached != null) return SendContext(sessionId = sessionId, sharedSecret = cached)
 
         val session = api.getSession(sessionId)
         val myUserId = tokenManager.getUserId()
@@ -396,7 +398,7 @@ class SecureMessagingRepository(
 
             keyStore.saveSharedSecret(sessionId, sharedSecret)
             Log.d(tag, "sendMessage: recovered responder shared secret for session=$sessionId")
-            return sharedSecret
+            return SendContext(sessionId = sessionId, sharedSecret = sharedSecret)
         }
 
         if (session.initiatorId == myUserId) {
@@ -404,8 +406,10 @@ class SecureMessagingRepository(
             val peerId = session.responderId
             val resolvedPeerUsername = session.responderUsername
             val newSession = createSession(resolvedPeerUsername, peerId).getOrThrow()
-            return keyStore.getSharedSecret(newSession.sessionId)
+            val sharedSecret = keyStore.getSharedSecret(newSession.sessionId)
                 ?: error("Failed to establish shared secret after session re-key")
+            Log.d(tag, "sendMessage: re-keyed initiator session $sessionId -> ${newSession.sessionId}")
+            return SendContext(sessionId = newSession.sessionId, sharedSecret = sharedSecret)
         }
 
         error("Cannot use session $sessionId for the current user")
@@ -598,6 +602,11 @@ private data class PackedDecryptResult(
     val packedCiphertext: ByteArray,
     val providerType: StegoProviderType,
     val usedFallback: Boolean,
+)
+
+private data class SendContext(
+    val sessionId: String,
+    val sharedSecret: ByteArray,
 )
 
 data class SessionInfo(
