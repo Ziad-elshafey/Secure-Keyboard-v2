@@ -22,6 +22,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 internal class SecureServerFixture(
@@ -114,6 +115,25 @@ internal class SecureServerFixture(
     val repository: SecureMessagingRepository by lazy {
         SecureMessagingRepository(
             api = secureApiService,
+            stegoEncodeApi = stegoEncodeApiService,
+            stegoDecodeApi = stegoDecodeApiService,
+            tokenManager = tokenManager,
+            keyStore = keyStore,
+            contactStore = contactStore,
+        )
+    }
+
+    fun modalFallbackRepository(): SecureMessagingRepository {
+        val fallbackApi = object : SecureApiService by secureApiService {
+            override suspend fun obfuscate(request: dev.patrickgold.florisboard.secure.data.remote.ObfuscateRequest) =
+                throw IOException("Forced Modal fallback during test")
+
+            override suspend fun deobfuscate(request: dev.patrickgold.florisboard.secure.data.remote.DeobfuscateRequest) =
+                throw IOException("Forced Modal fallback during test")
+        }
+
+        return SecureMessagingRepository(
+            api = fallbackApi,
             stegoEncodeApi = stegoEncodeApiService,
             stegoDecodeApi = stegoDecodeApiService,
             tokenManager = tokenManager,

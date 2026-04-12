@@ -3,8 +3,10 @@ package dev.patrickgold.florisboard.secure
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.util.Log
 import android.view.Gravity
 import android.view.ViewGroup
@@ -21,6 +23,7 @@ import dev.patrickgold.florisboard.FlorisImeService
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.editorInstance
 import dev.patrickgold.florisboard.ime.editor.EditorRange
+import dev.patrickgold.florisboard.secure.auth.GoogleOAuthCoordinator
 import dev.patrickgold.florisboard.secure.core.DecryptCaptureState
 import dev.patrickgold.florisboard.secure.core.ActiveSecureContact
 import dev.patrickgold.florisboard.secure.core.ManagedSecureSession
@@ -29,6 +32,7 @@ import dev.patrickgold.florisboard.secure.core.SecureOperationResult
 import dev.patrickgold.florisboard.secure.core.SecureSessionSelection
 import dev.patrickgold.florisboard.secure.core.SecureSessionState
 import dev.patrickgold.florisboard.secure.data.local.AuthTokenManager
+import dev.patrickgold.florisboard.secure.data.local.GoogleOAuthPendingStore
 import dev.patrickgold.florisboard.secure.data.local.SecureContactStore
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
 import dev.patrickgold.florisboard.secure.data.local.SecureSessionStore
@@ -39,13 +43,16 @@ import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeApiService
 import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeApiService
 import dev.patrickgold.florisboard.secure.data.remote.TokenRefreshAuthenticator
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
+import dev.patrickgold.florisboard.secure.data.repository.AuthFlowResult
 import dev.patrickgold.florisboard.secure.data.repository.DecryptResult
 import dev.patrickgold.florisboard.secure.data.repository.SecureMessagingRepository
 import dev.patrickgold.florisboard.secure.data.repository.SendResult
-import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -62,6 +69,8 @@ class SecureMessagingManager(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var secureStatusPopup: PopupWindow? = null
     private var secureLoadingPopup: PopupWindow? = null
+    private val _googleOAuthState = MutableStateFlow<GoogleOAuthState>(GoogleOAuthState.Idle)
+    private var pendingGoogleOAuthRequest: GoogleOAuthCoordinator.PendingRequest? = null
     private val loggingLevel = if (BuildConfig.DEBUG) {
         HttpLoggingInterceptor.Level.HEADERS
     } else {
@@ -82,6 +91,10 @@ class SecureMessagingManager(
 
     val contactStore: SecureContactStore by lazy {
         SecureContactStore(appContext)
+    }
+
+    private val googleOAuthPendingStore: GoogleOAuthPendingStore by lazy {
+        GoogleOAuthPendingStore(appContext)
     }
 
     private val authInterceptor: AuthInterceptor by lazy {
@@ -156,7 +169,6 @@ class SecureMessagingManager(
     }
 
     val secureMessagingRepository: SecureMessagingRepository by lazy {
-        CompressionService.initialize(appContext)
         SecureMessagingRepository(
             api = secureApiService,
             stegoEncodeApi = stegoEncodeApiService,
@@ -188,6 +200,14 @@ class SecureMessagingManager(
     fun isLoggedIn(): Boolean {
         return try {
             secureMessagingRepository.isLoggedIn()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun requiresUsernameSetup(): Boolean {
+        return try {
+            tokenManager.isUsernameSetupRequired()
         } catch (_: Exception) {
             false
         }
@@ -267,8 +287,144 @@ class SecureMessagingManager(
         return secureMessagingRepository.register(username, password)
     }
 
+    fun googleOAuthState(): StateFlow<GoogleOAuthState> = _googleOAuthState.asStateFlow()
+
+    suspend fun startGoogleLogin(): Result<Unit> = runCatching {
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                "SecureOAuth",
+                "SECURE_API_BASE_URL=${BuildConfig.SECURE_API_BASE_URL} " +
+                    "SECURE_OAUTH_REDIRECT_URI=${BuildConfig.SECURE_OAUTH_REDIRECT_URI}",
+            )
+        }
+        val pendingRequest = GoogleOAuthCoordinator.createPendingRequest()
+        val redirectHost = Uri.parse(pendingRequest.redirectUri).host
+        if (GoogleOAuthCoordinator.redirectHostBlocksGoogleOAuth(redirectHost)) {
+            error(GoogleOAuthCoordinator.googleOAuthRedirectIpv4BlockedMessage())
+        }
+        pendingGoogleOAuthRequest = pendingRequest
+        googleOAuthPendingStore.save(pendingRequest)
+        _googleOAuthState.value = GoogleOAuthState.InProgress("Opening Google sign-in...")
+
+        val start = secureMessagingRepository.getGoogleOAuthStart(
+            redirectUri = pendingRequest.redirectUri,
+            codeChallenge = pendingRequest.codeChallenge,
+            state = pendingRequest.state,
+        ).getOrThrow()
+
+        if (start.state.isNotBlank() && start.state != pendingRequest.state) {
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            error("OAuth state verification failed.")
+        }
+
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(start.authorizeUrl)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        appContext.startActivity(browserIntent)
+    }.onFailure {
+        pendingGoogleOAuthRequest = null
+        googleOAuthPendingStore.clear()
+    }
+
+    fun handleGoogleOAuthCallback(uri: Uri): Boolean {
+        if (!GoogleOAuthCoordinator.isOAuthCallback(uri)) {
+            return false
+        }
+
+        var pendingRequest = pendingGoogleOAuthRequest
+        if (pendingRequest == null) {
+            pendingRequest = googleOAuthPendingStore.load()
+            if (pendingRequest != null) {
+                pendingGoogleOAuthRequest = pendingRequest
+            }
+        }
+        if (pendingRequest == null) {
+            _googleOAuthState.value = GoogleOAuthState.Error("Google sign-in is no longer in progress.")
+            return true
+        }
+
+        if (System.currentTimeMillis() - pendingRequest.startedAtMillis > GoogleOAuthCoordinator.requestTimeoutMillis) {
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            _googleOAuthState.value = GoogleOAuthState.Error("Timed out waiting for Google sign-in to complete.")
+            return true
+        }
+
+        val callback = GoogleOAuthCoordinator.parseCallback(uri)
+        if (!callback.error.isNullOrBlank()) {
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            _googleOAuthState.value = GoogleOAuthState.Error(mapOAuthError(callback.error))
+            return true
+        }
+
+        if (callback.state != pendingRequest.state) {
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            _googleOAuthState.value = GoogleOAuthState.Error("OAuth state verification failed.")
+            return true
+        }
+
+        val code = callback.code
+        if (code.isNullOrBlank()) {
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            _googleOAuthState.value = GoogleOAuthState.Error(
+                "Google sign-in did not return the expected authorization code.",
+            )
+            return true
+        }
+
+        _googleOAuthState.value = GoogleOAuthState.InProgress("Finishing Google sign-in...")
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                secureMessagingRepository.loginWithGoogle(
+                    code = code,
+                    codeVerifier = pendingRequest.codeVerifier,
+                    redirectUri = pendingRequest.redirectUri,
+                )
+            }
+            pendingGoogleOAuthRequest = null
+            googleOAuthPendingStore.clear()
+            result.onSuccess { auth ->
+                _googleOAuthState.value = if (auth.requiresUsernameSetup) {
+                    GoogleOAuthState.RequiresUsernameSetup(auth.username)
+                } else {
+                    GoogleOAuthState.Success(auth.userId, auth.username)
+                }
+            }.onFailure { throwable ->
+                _googleOAuthState.value = GoogleOAuthState.Error(mapOAuthError(throwable.message))
+            }
+        }
+        return true
+    }
+
+    suspend fun completeProfile(username: String): Result<AuthFlowResult> {
+        val result = secureMessagingRepository.completeProfile(username)
+        result.onSuccess {
+            _googleOAuthState.value = GoogleOAuthState.Success(it.userId, it.username)
+        }.onFailure { throwable ->
+            _googleOAuthState.value = GoogleOAuthState.Error(mapOAuthError(throwable.message))
+        }
+        return result
+    }
+
+    fun clearGoogleOAuthState() {
+        pendingGoogleOAuthRequest = null
+        googleOAuthPendingStore.clear()
+        _googleOAuthState.value = GoogleOAuthState.Idle
+    }
+
     fun logout() {
+        scope.launch(Dispatchers.IO) {
+            secureMessagingRepository.logoutRemote()
+        }
         secureMessagingRepository.logout()
+        pendingGoogleOAuthRequest = null
+        googleOAuthPendingStore.clear()
+        _googleOAuthState.value = GoogleOAuthState.Idle
         clearActiveContact()
     }
 
@@ -389,6 +545,23 @@ class SecureMessagingManager(
 
     fun formatFailure(prefix: String, throwable: Throwable): String {
         return buildOperationError(prefix, throwable).message
+    }
+
+    private fun mapOAuthError(message: String?): String {
+        val normalized = message.orEmpty()
+        return when {
+            normalized.contains("Google OAuth is not configured on the server", ignoreCase = true) ->
+                "Google sign-in is not enabled on this server yet."
+            normalized.contains("OAuth state verification failed", ignoreCase = true) ->
+                "Google sign-in could not be verified. Please try again."
+            normalized.contains("Timed out waiting for Google sign-in", ignoreCase = true) ->
+                "Google sign-in timed out before returning to the app."
+            normalized.contains("access_denied", ignoreCase = true) ->
+                "Google sign-in was cancelled."
+            normalized.contains("username", ignoreCase = true) && normalized.contains("taken", ignoreCase = true) ->
+                "That username is already taken."
+            else -> normalized.ifBlank { "Google sign-in failed." }
+        }
     }
 
     suspend fun handleEncrypt(context: Context) {
@@ -742,6 +915,14 @@ class SecureMessagingManager(
             message = userFacing,
         )
     }
+}
+
+sealed interface GoogleOAuthState {
+    data object Idle : GoogleOAuthState
+    data class InProgress(val message: String) : GoogleOAuthState
+    data class RequiresUsernameSetup(val suggestedUsername: String?) : GoogleOAuthState
+    data class Success(val userId: String, val username: String) : GoogleOAuthState
+    data class Error(val message: String) : GoogleOAuthState
 }
 
 private data class EditorTextTarget(

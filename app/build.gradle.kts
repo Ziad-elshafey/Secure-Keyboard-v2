@@ -20,6 +20,7 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.gradle.api.Project
 import java.util.Properties
+import java.net.URI
 
 plugins {
     alias(libs.plugins.agp.application)
@@ -61,19 +62,6 @@ kotlin {
     }
 }
 
-val secureServerItFromLocalProperties: Map<String, String> = run {
-    val f = rootProject.file("local.properties")
-    if (!f.exists()) return@run emptyMap()
-    val p = Properties()
-    f.inputStream().use { p.load(it) }
-    fun get(key: String) = p.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
-    mapOf(
-        "secureServerIt" to get("secure.server.it"),
-        "secureServerItUsernamePrefix" to get("secure.server.it.username.prefix"),
-        "secureServerItPassword" to get("secure.server.it.password"),
-    ).mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
-}
-
 configure<ApplicationExtension> {
     namespace = "dev.patrickgold.florisboard"
     compileSdk = projectCompileSdk.toInt()
@@ -94,25 +82,12 @@ configure<ApplicationExtension> {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        val secureServerTestProps = mapOf(
-            "secureServerIt" to "SECURE_SERVER_IT",
-            "secureServerItUsernamePrefix" to "SECURE_SERVER_IT_USERNAME_PREFIX",
-            "secureServerItPassword" to "SECURE_SERVER_IT_PASSWORD",
-        )
-        secureServerTestProps.forEach { (propertyName, envName) ->
-            val configuredValue = providers.gradleProperty(propertyName)
-                .orElse(providers.environmentVariable(envName))
-                .orNull
-                ?: secureServerItFromLocalProperties[propertyName]
-            if (configuredValue != null) {
-                testInstrumentationRunnerArguments[propertyName] = configuredValue
-            }
-        }
-
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
         manifestPlaceholders["secureUsesCleartextTraffic"] = "false"
+        manifestPlaceholders["secureOAuthCallbackScheme"] = "https"
+        manifestPlaceholders["secureOAuthCallbackHost"] = "secure-oauth-host.placeholder"
 
         sourceSets {
             maybeCreate("main").apply {
@@ -142,10 +117,16 @@ configure<ApplicationExtension> {
 
             isDebuggable = true
             isJniDebuggable = false
-            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "http://18.233.108.148:8000/")))
+            val secureApiBaseUrl = project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "http://18.233.108.148:8000/")
+            val oauthRedirectUri = project.resolveSecureOAuthRedirectUri(secureApiBaseUrl)
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(secureApiBaseUrl))
+            buildConfigField("String", "SECURE_OAUTH_REDIRECT_URI", quoted(oauthRedirectUri))
             buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
             buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
             manifestPlaceholders["secureUsesCleartextTraffic"] = "true"
+            // OAuth redirect must stay https: Google rejects non-loopback http redirect_uri (400 invalid_request).
+            manifestPlaceholders["secureOAuthCallbackScheme"] = "https"
+            manifestPlaceholders["secureOAuthCallbackHost"] = project.manifestOAuthHostFromRedirect(oauthRedirectUri)
         }
 
         create("beta") {
@@ -155,9 +136,14 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
-            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            val secureApiBaseUrl = project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)
+            val oauthRedirectUri = project.resolveSecureOAuthRedirectUri(secureApiBaseUrl)
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(secureApiBaseUrl))
+            buildConfigField("String", "SECURE_OAUTH_REDIRECT_URI", quoted(oauthRedirectUri))
             buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
             buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
+            manifestPlaceholders["secureOAuthCallbackScheme"] = "https"
+            manifestPlaceholders["secureOAuthCallbackHost"] = project.manifestOAuthHostFromRedirect(oauthRedirectUri)
         }
 
         named("release") {
@@ -166,9 +152,14 @@ configure<ApplicationExtension> {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
-            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            val secureApiBaseUrl = project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)
+            val oauthRedirectUri = project.resolveSecureOAuthRedirectUri(secureApiBaseUrl)
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(secureApiBaseUrl))
+            buildConfigField("String", "SECURE_OAUTH_REDIRECT_URI", quoted(oauthRedirectUri))
             buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
             buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
+            manifestPlaceholders["secureOAuthCallbackScheme"] = "https"
+            manifestPlaceholders["secureOAuthCallbackHost"] = project.manifestOAuthHostFromRedirect(oauthRedirectUri)
         }
 
         create("benchmark") {
@@ -179,9 +170,14 @@ configure<ApplicationExtension> {
 
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
-            buildConfigField("String", "SECURE_API_BASE_URL", quoted(project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)))
+            val secureApiBaseUrl = project.resolveSecureEndpoint("secureApiBaseUrl", "SECURE_API_BASE_URL", fallbackValue = "https://secure-api-placeholder.invalid/", requireHttps = true, disallowPlaceholder = true)
+            val oauthRedirectUri = project.resolveSecureOAuthRedirectUri(secureApiBaseUrl)
+            buildConfigField("String", "SECURE_API_BASE_URL", quoted(secureApiBaseUrl))
+            buildConfigField("String", "SECURE_OAUTH_REDIRECT_URI", quoted(oauthRedirectUri))
             buildConfigField("String", "STEGO_ENCODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalEncodeBaseUrl", "SECURE_MODAL_ENCODE_BASE_URL", fallbackValue = "https://modalcd--encode-nocontext.modal.run/", requireHttps = true)))
             buildConfigField("String", "STEGO_DECODE_BASE_URL", quoted(project.resolveSecureEndpoint("secureModalDecodeBaseUrl", "SECURE_MODAL_DECODE_BASE_URL", fallbackValue = "https://modalcd--decode-nocontext.modal.run/", requireHttps = true)))
+            manifestPlaceholders["secureOAuthCallbackScheme"] = "https"
+            manifestPlaceholders["secureOAuthCallbackHost"] = project.manifestOAuthHostFromRedirect(oauthRedirectUri)
         }
     }
 
@@ -211,11 +207,39 @@ ksp {
     arg("room.expandProjection", "true")
 }
 
+val secureServerItFromLocalProperties: Map<String, String> = run {
+    val f = rootProject.file("local.properties")
+    if (!f.exists()) return@run emptyMap()
+    val p = Properties()
+    f.inputStream().use { p.load(it) }
+    fun get(key: String) = p.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+    mapOf(
+        "secureServerIt" to get("secure.server.it"),
+        "secureServerItUsernamePrefix" to get("secure.server.it.username.prefix"),
+        "secureServerItPassword" to get("secure.server.it.password"),
+    ).mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+}
+
 tasks.withType<Test> {
     testLogging {
         events = setOf(TestLogEvent.FAILED, TestLogEvent.PASSED, TestLogEvent.SKIPPED)
     }
     useJUnitPlatform()
+
+    val secureServerTestProps = mapOf(
+        "secureServerIt" to "SECURE_SERVER_IT",
+        "secureServerItUsernamePrefix" to "SECURE_SERVER_IT_USERNAME_PREFIX",
+        "secureServerItPassword" to "SECURE_SERVER_IT_PASSWORD",
+    )
+    secureServerTestProps.forEach { (propertyName, envName) ->
+        val configuredValue = providers.gradleProperty(propertyName)
+            .orElse(providers.environmentVariable(envName))
+            .orNull
+            ?: secureServerItFromLocalProperties[propertyName]
+        if (configuredValue != null) {
+            systemProperty(propertyName, configuredValue)
+        }
+    }
 }
 
 kover {
@@ -277,11 +301,13 @@ dependencies {
     testImplementation(libs.kotest.assertions.core)
     testImplementation(libs.kotest.property)
     testImplementation(libs.kotest.runner.junit5)
+    testImplementation(libs.junit4)
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
     testImplementation(libs.turbine)
-    androidTestImplementation(libs.junit4)
-    androidTestImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.core)
+    testRuntimeOnly(libs.junit.vintage.engine)
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.androidx.test.espresso.core)
 }
@@ -334,3 +360,35 @@ fun Project.resolveSecureEndpoint(
 }
 
 fun quoted(value: String): String = "\"$value\""
+
+/**
+ * Redirect URI sent to Google and registered in Google Cloud Console.
+ * Always https (non-loopback): Google OAuth policy rejects http redirect_uri except localhost/127.0.0.1.
+ * Google also rejects **raw IP** hosts in redirect_uri; use a DNS name via [resolveSecureOAuthRedirectUri].
+ *
+ * Optional override (same value must be registered in Google Cloud Console):
+ * - Environment variable `SECURE_OAUTH_REDIRECT_URI`
+ * - Gradle property `secureOauthRedirectUri`
+ */
+fun Project.resolveSecureOAuthRedirectUri(apiBaseUrl: String): String {
+    val override = providers.environmentVariable("SECURE_OAUTH_REDIRECT_URI")
+        .orElse(providers.gradleProperty("secureOauthRedirectUri"))
+        .orNull
+        ?.trim()
+    if (!override.isNullOrEmpty()) {
+        return override
+    }
+    return buildDefaultSecureOAuthRedirectUri(apiBaseUrl)
+}
+
+fun Project.manifestOAuthHostFromRedirect(oauthRedirectUri: String): String {
+    return URI(oauthRedirectUri).host
+        ?: throw GradleException("SECURE_OAUTH_REDIRECT_URI must include a host: $oauthRedirectUri")
+}
+
+private fun Project.buildDefaultSecureOAuthRedirectUri(apiBaseUrl: String): String {
+    val parsed = URI(apiBaseUrl)
+    val host = parsed.host ?: throw GradleException("Secure API base URL must include a host: $apiBaseUrl")
+    val portSuffix = if (parsed.port != -1) ":${parsed.port}" else ""
+    return "https://$host$portSuffix/oauth/callback/android"
+}

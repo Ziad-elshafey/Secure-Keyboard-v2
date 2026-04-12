@@ -35,14 +35,25 @@ class AuthTokenManager(context: Context) {
 
     fun getUsername(): String? = prefs.getString(KEY_USERNAME, null)
 
-    fun saveUserInfo(userId: String, username: String) {
+    fun getAuthMode(): String? = prefs.getString(KEY_AUTH_MODE, null)
+
+    fun isUsernameSetupRequired(): Boolean = prefs.getBoolean(KEY_USERNAME_SETUP_REQUIRED, false)
+
+    fun saveUserInfo(
+        userId: String,
+        username: String,
+        authMode: String? = null,
+        usernameSetupRequired: Boolean = false,
+    ) {
         prefs.edit()
             .putString(KEY_USER_ID, userId)
             .putString(KEY_USERNAME, username)
+            .putString(KEY_AUTH_MODE, authMode)
+            .putBoolean(KEY_USERNAME_SETUP_REQUIRED, usernameSetupRequired)
             .apply()
     }
 
-    fun isLoggedIn(): Boolean = getAccessToken() != null
+    fun isLoggedIn(): Boolean = getAccessToken() != null && !isUsernameSetupRequired()
 
     fun isAccessTokenExpired(): Boolean {
         val token = getAccessToken() ?: return true
@@ -69,5 +80,7 @@ class AuthTokenManager(context: Context) {
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_USERNAME = "username"
+        private const val KEY_AUTH_MODE = "auth_mode"
+        private const val KEY_USERNAME_SETUP_REQUIRED = "username_setup_required"
     }
 }

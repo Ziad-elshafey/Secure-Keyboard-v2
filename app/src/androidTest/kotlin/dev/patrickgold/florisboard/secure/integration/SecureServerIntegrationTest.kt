@@ -1,6 +1,7 @@
 package dev.patrickgold.florisboard.secure.integration
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import dev.patrickgold.florisboard.secure.data.repository.SecureMessagePayloadCodec
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,6 +33,24 @@ internal class SecureServerIntegrationTest : BaseSecureServerIntegrationTest() {
         withScenarioRetries {
             val sessionId = fixture.ensureFreshSession(userA, userB)
             val plaintext = "round trip secure message\nwith punctuation !? and emoji \uD83D\uDE80"
+
+            fixture.loginAs(userA)
+            val sendResult = fixture.repository.sendMessage(sessionId, userB.username, plaintext).getOrThrow()
+
+            fixture.loginAs(userB)
+            val decryptResult = fixture.repository.decryptMessage(sendResult.obfuscatedText, userA.username).getOrThrow()
+
+            assertEquals(plaintext, decryptResult.plaintext)
+        }
+    }
+
+    @Test
+    fun repetitivePlaintextUsesSmazPayloadAndRoundTrips() = runBlocking {
+        withScenarioRetries {
+            val sessionId = fixture.ensureFreshSession(userA, userB)
+            val plaintext = "the theater in the theater in the theater ".repeat(24).trim()
+
+            assertEquals(SecureMessagePayloadCodec.flagSmaz, SecureMessagePayloadCodec.buildPayload(plaintext).first())
 
             fixture.loginAs(userA)
             val sendResult = fixture.repository.sendMessage(sessionId, userB.username, plaintext).getOrThrow()
@@ -156,6 +175,28 @@ internal class SecureServerIntegrationTest : BaseSecureServerIntegrationTest() {
 
             assertEquals("after deactivation", decrypted)
             assertNotEquals("expected a fresh session after deactivation", oldSessionId, newSessionId)
+        }
+    }
+
+    @Test
+    fun backendAndModalFallbackRoutesBothDecryptToOriginalPlaintext() = runBlocking {
+        withScenarioRetries {
+            val sessionId = fixture.ensureFreshSession(userA, userB)
+            val backendPlaintext = "backend route plaintext with emoji 🔐"
+            val modalPlaintext = "the theater in the theater ".repeat(12).trim()
+            val modalRepository = fixture.modalFallbackRepository()
+
+            fixture.loginAs(userA)
+            val backendSend = fixture.repository.sendMessage(sessionId, userB.username, backendPlaintext).getOrThrow()
+            val modalSend = modalRepository.sendMessage(sessionId, userB.username, modalPlaintext).getOrThrow()
+
+            fixture.loginAs(userB)
+            val backendDecrypt = fixture.repository.decryptMessage(backendSend.obfuscatedText, userA.username).getOrThrow()
+            val modalDecrypt = modalRepository.decryptMessage(modalSend.obfuscatedText, userA.username).getOrThrow()
+
+            assertEquals(backendPlaintext, backendDecrypt.plaintext)
+            assertEquals(modalPlaintext, modalDecrypt.plaintext)
+            assertTrue("modal route should be forced fallback", modalDecrypt.usedFallback)
         }
     }
 

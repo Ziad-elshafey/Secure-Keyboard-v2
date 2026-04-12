@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
+import dev.patrickgold.florisboard.secure.GoogleOAuthState
 import dev.patrickgold.florisboard.secure.core.ActiveSecureContact
 import dev.patrickgold.florisboard.secure.core.SecureContact
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
@@ -58,6 +60,7 @@ fun SecureMessagingScreen() = FlorisScreen {
     val context = LocalContext.current
     val secureManager by context.secureMessagingManager()
     val scope = rememberCoroutineScope()
+    val googleOAuthState by secureManager.googleOAuthState().collectAsState()
 
     content {
         val contentHorizontalPadding = 16.dp
@@ -77,7 +80,8 @@ fun SecureMessagingScreen() = FlorisScreen {
         val panelShape = RoundedCornerShape(16.dp)
 
         var isLoggedIn by remember { mutableStateOf(secureManager.isLoggedIn()) }
-        var username by remember { mutableStateOf("") }
+        var isCompleteProfileMode by remember { mutableStateOf(secureManager.requiresUsernameSetup()) }
+        var username by remember { mutableStateOf(secureManager.getUsername().orEmpty()) }
         var password by remember { mutableStateOf("") }
         var statusMessage by remember { mutableStateOf("") }
         var isLoading by remember { mutableStateOf(false) }
@@ -117,14 +121,46 @@ fun SecureMessagingScreen() = FlorisScreen {
             }
         }
 
-        LaunchedEffect(isLoggedIn) {
-            if (isLoggedIn) {
+        LaunchedEffect(isLoggedIn, isCompleteProfileMode) {
+            if (isLoggedIn && !isCompleteProfileMode) {
                 activeContact = secureManager.getActiveContactSelection()
                 reloadContacts()
             } else {
                 contacts = emptyList()
                 searchResults = emptyList()
                 clearActiveContact()
+            }
+        }
+
+        LaunchedEffect(googleOAuthState) {
+            when (val state = googleOAuthState) {
+                GoogleOAuthState.Idle -> Unit
+                is GoogleOAuthState.InProgress -> {
+                    isLoading = true
+                    statusMessage = state.message
+                }
+                is GoogleOAuthState.RequiresUsernameSetup -> {
+                    isLoading = false
+                    isLoggedIn = false
+                    isCompleteProfileMode = true
+                    username = state.suggestedUsername.orEmpty()
+                    password = ""
+                    statusMessage = "Google sign-in succeeded. Choose your ENADOX username."
+                    secureManager.clearGoogleOAuthState()
+                }
+                is GoogleOAuthState.Success -> {
+                    isLoading = false
+                    isLoggedIn = true
+                    isCompleteProfileMode = false
+                    password = ""
+                    statusMessage = "Logged in as ${state.username}"
+                    secureManager.clearGoogleOAuthState()
+                }
+                is GoogleOAuthState.Error -> {
+                    isLoading = false
+                    statusMessage = state.message
+                    secureManager.clearGoogleOAuthState()
+                }
             }
         }
 
@@ -152,7 +188,7 @@ fun SecureMessagingScreen() = FlorisScreen {
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(bottom = panelHeaderBottomSpacing),
                 )
-                if (isLoggedIn) {
+                if (isLoggedIn && !isCompleteProfileMode) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
@@ -182,7 +218,10 @@ fun SecureMessagingScreen() = FlorisScreen {
                         onClick = {
                             secureManager.logout()
                             isLoggedIn = false
+                            isCompleteProfileMode = false
                             statusMessage = ""
+                            username = ""
+                            password = ""
                             clearActiveContact()
                         },
                         modifier = Modifier
@@ -190,6 +229,69 @@ fun SecureMessagingScreen() = FlorisScreen {
                             .height(secondaryControlHeight),
                     ) {
                         Text(stringRes(R.string.settings__secure_messaging__logout))
+                    }
+                } else if (isCompleteProfileMode) {
+                    Text(
+                        text = "Choose your ENADOX username to finish Google sign-in.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        label = { Text(stringRes(R.string.settings__secure_messaging__username)) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(primaryControlHeight),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(compactRowSpacing),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = {
+                                if (username.isBlank()) return@Button
+                                isLoading = true
+                                statusMessage = "Completing profile..."
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        secureManager.completeProfile(username.trim())
+                                    }
+                                    isLoading = false
+                                    result.onSuccess {
+                                        isLoggedIn = true
+                                        isCompleteProfileMode = false
+                                        statusMessage = "Profile completed as ${it.username}"
+                                    }.onFailure { e ->
+                                        statusMessage = secureManager.formatFailure("Profile setup failed", e)
+                                    }
+                                }
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(secondaryControlHeight),
+                        ) {
+                            Text("Complete profile")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                secureManager.logout()
+                                isLoggedIn = false
+                                isCompleteProfileMode = false
+                                username = ""
+                                password = ""
+                                statusMessage = ""
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(secondaryControlHeight),
+                        ) {
+                            Text("Cancel")
+                        }
                     }
                 } else {
                     Text(
@@ -273,13 +375,36 @@ fun SecureMessagingScreen() = FlorisScreen {
                             Text(stringRes(R.string.settings__secure_messaging__register_button))
                         }
                     }
+                    OutlinedButton(
+                        onClick = {
+                            isLoading = true
+                            statusMessage = ""
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    secureManager.startGoogleLogin()
+                                }
+                                isLoading = false
+                                result.onFailure { e ->
+                                    statusMessage = secureManager.formatFailure("Google sign-in failed", e)
+                                }
+                            }
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(secondaryControlHeight),
+                    ) {
+                        Text("Continue with Google")
+                    }
                 }
 
                 if (statusMessage.isNotEmpty()) {
-                    val isError = statusMessage.startsWith("Login failed") ||
-                        statusMessage.startsWith("Register failed") ||
-                        statusMessage.startsWith("Failed") ||
-                        statusMessage.startsWith("Deactivate failed")
+                    val isError = !(statusMessage.startsWith("Logged in") ||
+                        statusMessage.startsWith("Registered!") ||
+                        statusMessage.startsWith("Profile completed") ||
+                        statusMessage.startsWith("Opening Google sign-in") ||
+                        statusMessage.startsWith("Finishing Google sign-in") ||
+                        statusMessage.startsWith("Completing profile"))
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(

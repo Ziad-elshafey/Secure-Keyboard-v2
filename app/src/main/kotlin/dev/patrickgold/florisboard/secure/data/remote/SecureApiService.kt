@@ -14,8 +14,24 @@ interface SecureApiService {
     @POST("api/auth/login")
     suspend fun login(@Body request: LoginRequest): TokenResponse
 
+    @GET("api/auth/oauth/google/start")
+    suspend fun getGoogleOAuthStart(
+        @Query("redirect_uri") redirectUri: String,
+        @Query("code_challenge") codeChallenge: String,
+        @Query("state") state: String,
+    ): GoogleOAuthStartResponse
+
+    @POST("api/auth/oauth/google/exchange")
+    suspend fun exchangeGoogleOAuthCode(@Body request: GoogleOAuthExchangeRequest): TokenResponse
+
+    @POST("api/auth/complete-profile")
+    suspend fun completeProfile(@Body request: CompleteProfileRequest): CompleteProfileResponse
+
     @POST("api/auth/refresh")
     suspend fun refreshToken(@Body request: RefreshTokenRequest): TokenResponse
+
+    @POST("api/auth/logout")
+    suspend fun logout(@Body request: LogoutRequest)
 
     @GET("api/users/me")
     suspend fun getCurrentUser(): UserProfileResponse

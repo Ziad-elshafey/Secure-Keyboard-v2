@@ -10,7 +10,10 @@ import dev.patrickgold.florisboard.secure.data.local.SecureContactStore
 import dev.patrickgold.florisboard.secure.data.local.SecureKeyStore
 import dev.patrickgold.florisboard.secure.data.remote.CreateSessionRequest
 import dev.patrickgold.florisboard.secure.data.remote.DeobfuscateRequest
+import dev.patrickgold.florisboard.secure.data.remote.GoogleOAuthExchangeRequest
+import dev.patrickgold.florisboard.secure.data.remote.GoogleOAuthStartResponse
 import dev.patrickgold.florisboard.secure.data.remote.LoginRequest
+import dev.patrickgold.florisboard.secure.data.remote.LogoutRequest
 import dev.patrickgold.florisboard.secure.data.remote.ObfuscateRequest
 import dev.patrickgold.florisboard.secure.data.remote.RefreshTokenRequest
 import dev.patrickgold.florisboard.secure.data.remote.RegisterRequest
@@ -20,6 +23,8 @@ import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeApiService
 import dev.patrickgold.florisboard.secure.data.remote.StegoDecodeRequest
 import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeApiService
 import dev.patrickgold.florisboard.secure.data.remote.StegoEncodeRequest
+import dev.patrickgold.florisboard.secure.data.remote.CompleteProfileRequest
+import dev.patrickgold.florisboard.secure.data.remote.UserProfileResponse
 import dev.patrickgold.florisboard.secure.data.remote.UploadKeysRequest
 import dev.patrickgold.florisboard.secure.data.remote.UserSearchResult
 import dev.patrickgold.florisboard.secure.data.repository.compression.CompressionService
@@ -35,66 +40,90 @@ class SecureMessagingRepository(
 ) {
     companion object {
         private const val tag = "SecureMessagingRepo"
-        const val flagRaw: Byte = 0x00
-        const val flagCompressed: Byte = 0x01
         private const val defaultStegoContext = "car"
     }
-
-    /** Off: custom arithmetic compression disabled; raw UTF-8 payloads only (0x00). */
-    private val compressionEnabled: Boolean = false
 
     suspend fun register(username: String, password: String): Result<String> = runCatching {
         val email = "$username@example.com"
         val response = api.register(RegisterRequest(username, email, password))
-        tokenManager.saveTokens(response.accessToken, response.refreshToken)
-        tokenManager.saveUserInfo(response.userId, response.username)
-        keyStore.setActiveUser(response.userId)
-
-        val identityKeyPair = E2EEService.generateIdentityKeyPair()
-        val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
-
-        api.uploadKeys(
-            UploadKeysRequest(
-                identityKeyPublic = E2EEService.toBase64(identityKeyPair.publicKey),
-                signedPrekeyPublic = E2EEService.toBase64(signedPreKey.publicKey),
-                signedPrekeySignature = E2EEService.toBase64(signedPreKey.signature),
-                signedPrekeyId = signedPreKey.keyId,
-            ),
+        val user = UserProfileResponse(
+            userId = response.userId,
+            username = response.username,
+            email = response.email,
+            displayName = response.displayName,
+            createdAt = response.createdAt,
+            lastSeenAt = null,
+            isActive = response.isActive,
+            authMode = "password",
+            usernameSetupRequired = response.requiresUsernameSetup,
         )
-
-        keyStore.saveIdentityKeyPair(identityKeyPair)
-        keyStore.saveSignedPreKey(signedPreKey)
-
-        response.userId
+        finalizeAuthenticatedUser(
+            accessToken = response.accessToken,
+            refreshToken = response.refreshToken,
+            user = user,
+            requiresUsernameSetup = response.requiresUsernameSetup,
+        ).userId
     }
 
     suspend fun login(username: String, password: String): Result<String> = runCatching {
         val response = api.login(LoginRequest(username, password))
-        tokenManager.saveTokens(response.accessToken, response.refreshToken)
-
         val user = api.getCurrentUser()
-        tokenManager.saveUserInfo(user.userId, user.username)
-        keyStore.setActiveUser(user.userId)
+        finalizeAuthenticatedUser(
+            accessToken = response.accessToken,
+            refreshToken = response.refreshToken,
+            user = user,
+            requiresUsernameSetup = response.requiresUsernameSetup,
+        ).userId
+    }
 
-        val keyStatus = api.getKeyStatus()
-        if (!keyStore.hasIdentityKeys() || !keyStatus.hasIdentityKey || !keyStatus.hasSignedPrekey) {
-            val identityKeyPair = E2EEService.generateIdentityKeyPair()
-            val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
+    suspend fun getGoogleOAuthStart(
+        redirectUri: String,
+        codeChallenge: String,
+        state: String,
+    ): Result<GoogleOAuthStartResponse> = runCatching {
+        api.getGoogleOAuthStart(
+            redirectUri = redirectUri,
+            codeChallenge = codeChallenge,
+            state = state,
+        )
+    }
 
-            api.uploadKeys(
-                UploadKeysRequest(
-                    identityKeyPublic = E2EEService.toBase64(identityKeyPair.publicKey),
-                    signedPrekeyPublic = E2EEService.toBase64(signedPreKey.publicKey),
-                    signedPrekeySignature = E2EEService.toBase64(signedPreKey.signature),
-                    signedPrekeyId = signedPreKey.keyId,
-                ),
-            )
+    suspend fun loginWithGoogle(
+        code: String,
+        codeVerifier: String,
+        redirectUri: String,
+    ): Result<AuthFlowResult> = runCatching {
+        val response = api.exchangeGoogleOAuthCode(
+            GoogleOAuthExchangeRequest(
+                code = code,
+                codeVerifier = codeVerifier,
+                redirectUri = redirectUri,
+            ),
+        )
+        val user = api.getCurrentUser()
+        finalizeAuthenticatedUser(
+            accessToken = response.accessToken,
+            refreshToken = response.refreshToken,
+            user = user,
+            requiresUsernameSetup = response.requiresUsernameSetup,
+        )
+    }
 
-            keyStore.saveIdentityKeyPair(identityKeyPair)
-            keyStore.saveSignedPreKey(signedPreKey)
-        }
-
-        user.userId
+    suspend fun completeProfile(username: String): Result<AuthFlowResult> = runCatching {
+        val response = api.completeProfile(CompleteProfileRequest(username = username))
+        tokenManager.saveUserInfo(
+            userId = response.userId,
+            username = response.username,
+            authMode = tokenManager.getAuthMode() ?: "google",
+            usernameSetupRequired = false,
+        )
+        keyStore.setActiveUser(response.userId)
+        ensureKeysUploaded()
+        AuthFlowResult(
+            userId = response.userId,
+            username = response.username,
+            requiresUsernameSetup = false,
+        )
     }
 
     fun isLoggedIn(): Boolean = tokenManager.isLoggedIn()
@@ -108,6 +137,13 @@ class SecureMessagingRepository(
             keyStore.clearActiveUser()
         }
         tokenManager.clearAll()
+    }
+
+    suspend fun logoutRemote() {
+        val refreshToken = tokenManager.getRefreshToken()
+        runCatching {
+            api.logout(LogoutRequest(refreshToken = refreshToken))
+        }
     }
 
     suspend fun searchUsers(query: String): Result<List<UserSearchResult>> = runCatching {
@@ -214,7 +250,7 @@ class SecureMessagingRepository(
         val counter = counterResp.counter
         Log.d(tag, "sendMessage: got counter=$counter for session=$activeSessionId peer=$peerUsername")
 
-        val payload = buildPayload(plaintext)
+        val payload = SecureMessagePayloadCodec.buildPayload(plaintext)
         val ciphertext = E2EEService.chacha20Encrypt(payload, sharedSecret, counter)
         val packed = E2EEService.packCiphertextWithCounter(ciphertext, counter)
         val packedBits = packed.toBitString()
@@ -348,7 +384,7 @@ class SecureMessagingRepository(
                 val (ciphertext, counter) = E2EEService.unpackCiphertextAndCounter(decoded.packedCiphertext)
                 Log.d(tag, "decryptMessage: trying session=${session.sessionId} ciphertext=${ciphertext.size}B counter=$counter")
                 val payload = E2EEService.chacha20Decrypt(ciphertext, sharedSecret, counter)
-                val plaintext = parsePayload(payload)
+                val plaintext = SecureMessagePayloadCodec.parsePayload(payload)
                 Log.d(tag, "decryptMessage: success session=${session.sessionId} plaintext=${plaintext.take(50)}...")
                 return@runCatching DecryptResult(
                     plaintext = plaintext,
@@ -433,56 +469,58 @@ class SecureMessagingRepository(
         return sharedSecret
     }
 
-    private fun buildPayload(plaintext: String): ByteArray {
-        val rawBytes = plaintext.toByteArray(Charsets.UTF_8)
-
-        if (compressionEnabled) {
-            try {
-                val compressed = CompressionService.compress(plaintext)
-                if (compressed.isNotEmpty() && compressed.size < rawBytes.size) {
-                    val bitsPerWord = CompressionService.getBitsPerWord(plaintext, compressed.size)
-                    val savings = CompressionService.getSavingsPercent(rawBytes.size, compressed.size)
-                    Log.d(tag, "Compression: ${rawBytes.size}B -> ${compressed.size}B (%.1f%% saved, %.1f bits/word)".format(savings, bitsPerWord))
-
-                    return ByteArray(1 + compressed.size).also {
-                        it[0] = flagCompressed
-                        System.arraycopy(compressed, 0, it, 1, compressed.size)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(tag, "Compression failed, falling back to raw", e)
-            }
-        }
-
-        return ByteArray(1 + rawBytes.size).also {
-            it[0] = flagRaw
-            System.arraycopy(rawBytes, 0, it, 1, rawBytes.size)
-        }
-    }
-
-    private fun parsePayload(payload: ByteArray): String {
-        require(payload.isNotEmpty()) { "Empty payload after decryption" }
-
-        val flag = payload[0]
-        val data = payload.copyOfRange(1, payload.size)
-
-        return when (flag) {
-            flagCompressed -> {
-                Log.d(tag, "Decompressing ${data.size}B payload")
-                CompressionService.decompress(data)
-            }
-            flagRaw -> String(data, Charsets.UTF_8)
-            else -> {
-                Log.w(tag, "Unknown payload flag 0x%02X - treating as raw".format(flag))
-                String(data, Charsets.UTF_8)
-            }
-        }
-    }
-
     private fun ByteArray.toBitString(): String =
         joinToString(separator = "") { byte ->
             String.format("%8s", (byte.toInt() and 0xFF).toString(2)).replace(' ', '0')
         }
+
+    private suspend fun finalizeAuthenticatedUser(
+        accessToken: String,
+        refreshToken: String,
+        user: UserProfileResponse,
+        requiresUsernameSetup: Boolean,
+    ): AuthFlowResult {
+        tokenManager.saveTokens(accessToken, refreshToken)
+        tokenManager.saveUserInfo(
+            userId = user.userId,
+            username = user.username,
+            authMode = user.authMode.ifBlank { null },
+            usernameSetupRequired = requiresUsernameSetup || user.usernameSetupRequired,
+        )
+        keyStore.setActiveUser(user.userId)
+
+        if (!requiresUsernameSetup && !user.usernameSetupRequired) {
+            ensureKeysUploaded()
+        }
+
+        return AuthFlowResult(
+            userId = user.userId,
+            username = user.username,
+            requiresUsernameSetup = requiresUsernameSetup || user.usernameSetupRequired,
+        )
+    }
+
+    private suspend fun ensureKeysUploaded() {
+        val keyStatus = api.getKeyStatus()
+        if (keyStore.hasIdentityKeys() && keyStatus.hasIdentityKey && keyStatus.hasSignedPrekey) {
+            return
+        }
+
+        val identityKeyPair = E2EEService.generateIdentityKeyPair()
+        val signedPreKey = E2EEService.generateSignedPreKey(1, identityKeyPair.privateKey)
+
+        api.uploadKeys(
+            UploadKeysRequest(
+                identityKeyPublic = E2EEService.toBase64(identityKeyPair.publicKey),
+                signedPrekeyPublic = E2EEService.toBase64(signedPreKey.publicKey),
+                signedPrekeySignature = E2EEService.toBase64(signedPreKey.signature),
+                signedPrekeyId = signedPreKey.keyId,
+            ),
+        )
+
+        keyStore.saveIdentityKeyPair(identityKeyPair)
+        keyStore.saveSignedPreKey(signedPreKey)
+    }
 
     private fun bitStringToByteArray(bits: String): ByteArray {
         val normalizedBits = bits.filterNot { it.isWhitespace() }
@@ -613,3 +651,40 @@ data class SessionInfo(
     val sessionId: String,
     val peerUsername: String,
 )
+
+data class AuthFlowResult(
+    val userId: String,
+    val username: String,
+    val requiresUsernameSetup: Boolean,
+)
+
+internal object SecureMessagePayloadCodec {
+    const val flagRaw: Byte = 0x00
+    const val flagSmaz: Byte = 0x01
+
+    fun buildPayload(plaintext: String): ByteArray {
+        val rawBytes = plaintext.toByteArray(Charsets.UTF_8)
+        val compressed = CompressionService.compress(rawBytes)
+        val useCompressed = compressed.isNotEmpty() && compressed.size < rawBytes.size
+        val payloadBytes = if (useCompressed) compressed else rawBytes
+        val flag = if (useCompressed) flagSmaz else flagRaw
+
+        return ByteArray(1 + payloadBytes.size).also {
+            it[0] = flag
+            System.arraycopy(payloadBytes, 0, it, 1, payloadBytes.size)
+        }
+    }
+
+    fun parsePayload(payload: ByteArray): String {
+        require(payload.isNotEmpty()) { "Empty payload after decryption" }
+
+        val flag = payload[0]
+        val data = payload.copyOfRange(1, payload.size)
+
+        return when (flag) {
+            flagRaw -> data.toString(Charsets.UTF_8)
+            flagSmaz -> CompressionService.decompress(data).toString(Charsets.UTF_8)
+            else -> error("Unknown payload flag 0x%02X".format(flag))
+        }
+    }
+}

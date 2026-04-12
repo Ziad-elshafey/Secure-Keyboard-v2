@@ -18,6 +18,10 @@ data class RefreshTokenRequest(
     @SerializedName("refresh_token") val refreshToken: String,
 )
 
+data class LogoutRequest(
+    @SerializedName("refresh_token") val refreshToken: String? = null,
+)
+
 data class RegisterResponse(
     @SerializedName("user_id") val userId: String,
     @SerializedName("username") val username: String,
@@ -28,6 +32,7 @@ data class RegisterResponse(
     @SerializedName("access_token") val accessToken: String,
     @SerializedName("refresh_token") val refreshToken: String,
     @SerializedName("token_type") val tokenType: String = "bearer",
+    @SerializedName("requires_username_setup") val requiresUsernameSetup: Boolean = false,
 )
 
 data class TokenResponse(
@@ -35,6 +40,31 @@ data class TokenResponse(
     @SerializedName("refresh_token") val refreshToken: String,
     @SerializedName("token_type") val tokenType: String = "bearer",
     @SerializedName("expires_in") val expiresIn: Int = 86400,
+    @SerializedName("requires_username_setup") val requiresUsernameSetup: Boolean = false,
+)
+
+data class GoogleOAuthStartResponse(
+    @SerializedName("provider") val provider: String,
+    @SerializedName("authorize_url") val authorizeUrl: String,
+    @SerializedName("state") val state: String,
+    @SerializedName("redirect_uri") val redirectUri: String,
+)
+
+data class GoogleOAuthExchangeRequest(
+    @SerializedName("code") val code: String,
+    @SerializedName("code_verifier") val codeVerifier: String,
+    @SerializedName("redirect_uri") val redirectUri: String,
+)
+
+data class CompleteProfileRequest(
+    @SerializedName("username") val username: String,
+)
+
+data class CompleteProfileResponse(
+    @SerializedName("user_id") val userId: String,
+    @SerializedName("username") val username: String,
+    @SerializedName("email") val email: String,
+    @SerializedName("display_name") val displayName: String? = null,
 )
 
 data class UserProfileResponse(
@@ -45,6 +75,8 @@ data class UserProfileResponse(
     @SerializedName("created_at") val createdAt: String,
     @SerializedName("last_seen_at") val lastSeenAt: String?,
     @SerializedName("is_active") val isActive: Boolean,
+    @SerializedName("auth_mode") val authMode: String = "",
+    @SerializedName("username_setup_required") val usernameSetupRequired: Boolean = false,
 )
 
 data class UserSearchResult(

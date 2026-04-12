@@ -84,6 +84,17 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="ui" android:host="florisboard" android:pathPrefix="/" />
             </intent-filter>
+            <!-- No autoVerify: verified App Links require /.well-known/assetlinks.json on the API host;
+                 OAuth still resolves via VIEW intent matching scheme/host/path. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="${secureOAuthCallbackScheme}"
+                    android:host="${secureOAuthCallbackHost}"
+                    android:pathPrefix="/oauth/callback/android" />
+            </intent-filter>
             <intent-filter android:label="Import Extension">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>

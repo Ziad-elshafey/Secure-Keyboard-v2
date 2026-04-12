@@ -62,6 +62,8 @@ class AuthInterceptor(
         private val AUTH_PATHS = listOf(
             "/api/auth/register",
             "/api/auth/login",
+            "/api/auth/oauth/google/start",
+            "/api/auth/oauth/google/exchange",
             "/api/auth/refresh",
         )
     }

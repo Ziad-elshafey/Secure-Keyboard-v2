@@ -76,8 +76,14 @@ if errorlevel 1 (
     echo [WARN] Normal install failed, retrying with test flag...
     "%ADB%" -s !EMU_SERIAL! install -r -d -t "!APK_PATH!" >nul
     if errorlevel 1 (
-        echo [ERROR] Install failed on !EMU_SERIAL!
-        exit /b 1
+        echo [WARN] Install still failed ^(often INSTALL_FAILED_UPDATE_INCOMPATIBLE: different signing key^).
+        echo [INFO] Uninstalling !APP_ID! and doing a clean install...
+        "%ADB%" -s !EMU_SERIAL! uninstall !APP_ID! >nul 2>&1
+        "%ADB%" -s !EMU_SERIAL! install -r -d -t "!APK_PATH!" >nul
+        if errorlevel 1 (
+            echo [ERROR] Install failed on !EMU_SERIAL! after uninstall retry
+            exit /b 1
+        )
     )
 )
 

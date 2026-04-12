@@ -48,11 +48,13 @@ import dev.patrickgold.florisboard.app.ext.ExtensionImportScreenType
 import dev.patrickgold.florisboard.app.setup.NotificationPermissionState
 import dev.patrickgold.florisboard.appContext
 import dev.patrickgold.florisboard.cacheManager
+import dev.patrickgold.florisboard.secureMessagingManager
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.compose.LocalPreviewFieldController
 import dev.patrickgold.florisboard.lib.compose.PreviewKeyboardField
 import dev.patrickgold.florisboard.lib.compose.rememberPreviewFieldController
 import dev.patrickgold.florisboard.lib.util.AppVersionUtils
+import dev.patrickgold.florisboard.secure.auth.GoogleOAuthCoordinator
 import dev.patrickgold.jetpref.datastore.model.collectAsState
 import dev.patrickgold.jetpref.datastore.ui.ProvideDefaultDialogPrefStrings
 import java.util.concurrent.atomic.AtomicBoolean
@@ -154,6 +156,14 @@ class FlorisAppActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
 
+        if (intent.action == Intent.ACTION_VIEW && GoogleOAuthCoordinator.isOAuthCallback(intent.data)) {
+            this.secureMessagingManager().value.handleGoogleOAuthCallback(requireNotNull(intent.data))
+            intentToBeHandled = Intent(
+                Intent.ACTION_VIEW,
+                android.net.Uri.parse("ui://florisboard/settings/secure-messaging"),
+            )
+            return
+        }
         if (intent.action == Intent.ACTION_VIEW && intent.categories?.contains(Intent.CATEGORY_BROWSABLE) == true) {
             intentToBeHandled = intent
             return
